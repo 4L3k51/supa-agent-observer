@@ -42,7 +42,10 @@ from storage import SupabaseStorage, create_storage
 # Configuration
 # ─────────────────────────────────────────────
 
-DEFAULT_PROJECT_DIR = os.path.expanduser("~/orchestrator-projects")
+# Project output directory relative to this script's location
+SCRIPT_DIR = Path(__file__).parent.resolve()
+DEFAULT_PROJECT_DIR = SCRIPT_DIR / "projects"
+DEFAULT_PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Timeouts (seconds) - generous because these agents can be slow
 CLAUDE_CODE_TIMEOUT = 600   # 10 min for planning/verification
@@ -855,7 +858,7 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         slug = args.prompt[:30].lower().replace(" ", "_")
         slug = "".join(c for c in slug if c.isalnum() or c == "_")
-        project_dir = os.path.join(DEFAULT_PROJECT_DIR, f"{timestamp}_{slug}")
+        project_dir = str(DEFAULT_PROJECT_DIR / f"{timestamp}_{slug}")
 
     run_orchestration(
         user_prompt=args.prompt,
