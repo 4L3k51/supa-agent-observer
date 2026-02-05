@@ -2,6 +2,25 @@
 
 Observation framework that coordinates **Claude Code** (planner/verifier) and **Cursor Agent** (implementer) to build apps while logging every token, tool call, and web search to **Supabase**.
 
+## Purpose
+
+This is a measurement tool. It answers the question: **given clear, well-specified instructions, where do AI coding agents still get things wrong?**
+
+By running the same build prompt multiple times and logging every step, tool call, verification verdict, and smoke test result, you get a structured dataset that shows:
+
+- **Knowledge gaps** — which tasks consistently fail? If RLS policy steps fail 8 out of 10 runs with similar errors, that's a gap in training data or documentation, not randomness
+- **Recovery effectiveness** — when the verifier triggers a web search, do the findings actually help the retry succeed? If searches for "supabase realtime" never lead to passing retries, the available docs aren't good enough
+- **Tool comparison** — Claude Code and Cursor implement the same steps with the same instructions. You can compare which tool uses more Bash calls, reads more files before editing, or recovers better from failures
+- **Ground truth** — the smoke test phase runs the finished app. Either the server starts or it doesn't, either the tests pass or they don't. This separates "code that looks right" from "code that works"
+
+The actionable output: identify where documentation, examples, or training data need improvement so these tools build correctly. The human prompt is held constant so you're measuring agent capability, not user skill.
+
+### What this doesn't measure
+
+- **Editing existing code.** All runs build greenfield projects. Both tools fail differently — and often worse — when modifying existing codebases where they can break unrelated code. That failure mode doesn't exist here
+- **Subtle correctness.** The smoke test catches "does it crash" but not "is the RLS policy actually secure" or "does the auth flow leak tokens." The verifier shares training-data blind spots with the implementer — when both learned the same wrong pattern, incorrect code passes verification
+- **Randomness vs gaps.** A single run is an anecdote. Run the same prompt 5-10 times. Consistent failures at the same step are knowledge gaps (addressable). Different failures every time mean the tool is guessing (not addressable with docs alone)
+
 ## How It Works
 
 ```
