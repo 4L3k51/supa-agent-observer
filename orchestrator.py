@@ -93,7 +93,6 @@ def run_claude_code(
         "--output-format", "stream-json",
         "--verbose",  # Required when using --output-format=stream-json with --print
         "--allowedTools", "Bash,Read,Write,Edit,MultiEdit,LS,Glob,WebSearch,WebFetch",
-        "--sandbox", "enabled",
         "--permission-mode", "bypassPermissions",
     ]
     if system_prompt:
