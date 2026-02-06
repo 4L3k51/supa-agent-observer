@@ -375,6 +375,13 @@ IDEMPOTENT DDL (critical for retry safety):
   - Use CREATE OR REPLACE VIEW for views
 - This ensures migrations succeed even if partially applied in a previous attempt
 
+TABLE PERMISSIONS (critical for RLS to work):
+- After creating tables, ALWAYS add GRANT statements for the authenticated role:
+  - GRANT ALL ON tablename TO authenticated;
+  - GRANT USAGE ON SEQUENCE tablename_id_seq TO authenticated;
+- Without GRANTs, the PostgREST API returns PGRST301 "permission denied" errors
+- The service_role key bypasses GRANTs, so missing GRANTs only show up at runtime
+
 FORMAT your response as:
 STEP 1: [title]
 PHASE: [one of: setup, schema, backend, frontend, testing, deployment]
@@ -545,15 +552,30 @@ Report the results. If you encounter "already exists" errors but the schema look
 RLS_TEST_SYSTEM_PROMPT = """\
 You are testing Row Level Security policies on a live Supabase database.
 
+CRITICAL: The service_role key bypasses BOTH RLS policies AND table GRANTs.
+You MUST test data access using the anon key + user JWT to catch missing GRANTs.
+
 RULES:
-- Create a test user using the Supabase Auth API (service_role key)
-- Attempt to access data as that user using the anon key + user JWT
+- Create a test user using the Supabase Auth API (service_role key for admin endpoint only)
+- Sign in as that user to get a JWT
+- For ALL data access tests, use: anon key + user JWT (Authorization: Bearer <jwt>)
+- NEVER use the service_role key for data access tests - it hides permission issues
 - Verify that:
-  1. Authenticated users can only see their own data
-  2. Unauthenticated requests are properly blocked
-  3. Service role can bypass RLS (expected behavior)
+  1. Authenticated users can access tables they should (catches missing GRANT TO authenticated)
+  2. Authenticated users can only see their own data (catches missing RLS policies)
+  3. Unauthenticated requests (anon key only, no JWT) are properly blocked
+- Watch for PGRST301 errors ("permission denied" or "No suitable key") - these indicate missing GRANTs
 - Clean up the test user when done
-- Use curl to make test requests to the PostgREST API
+
+TEST PATTERN (use curl):
+  # Create user (service_role OK here - it's an admin operation)
+  curl -X POST "$URL/auth/v1/admin/users" -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" ...
+
+  # Sign in to get JWT
+  curl -X POST "$URL/auth/v1/token?grant_type=password" -H "apikey: $ANON_KEY" ...
+
+  # Data access - MUST use anon key + JWT, NOT service key
+  curl "$URL/rest/v1/todos" -H "apikey: $ANON_KEY" -H "Authorization: Bearer $USER_JWT"
 
 FORMAT your response as:
 TEST_USER_CREATED: YES | NO
@@ -561,11 +583,12 @@ TESTS_RUN: [number]
 TESTS_PASSED: [number]
 STATUS: SUCCESS | FAILED
 RLS_ENFORCED: YES | NO | PARTIAL
+GRANTS_VALID: YES | NO
 ERRORS (if any):
 - [error 1]
 - [error 2]
 
-SUMMARY: [1-2 sentence assessment of RLS security]
+SUMMARY: [1-2 sentence assessment of RLS security and table permissions]
 """
 
 RLS_TEST_PROMPT_TEMPLATE = """\
@@ -577,14 +600,33 @@ SUPABASE_URL: {supabase_url}
 SUPABASE_ANON_KEY: {supabase_anon_key}
 SUPABASE_SERVICE_KEY: {supabase_service_key}
 
+CRITICAL: Use anon key + user JWT for data access tests, NOT service_role key.
+The service_role key bypasses GRANTs and will hide permission issues like PGRST301.
+
 Test plan:
-1. Create a test user via Auth API: curl -X POST "{supabase_url}/auth/v1/admin/users" with service_role key
-2. Sign in as that user to get a JWT
-3. Make requests to tables that have RLS policies
-4. Verify unauthorized access is blocked
+1. Create a test user via Auth API (service_role key OK for admin endpoint):
+   curl -X POST "{supabase_url}/auth/v1/admin/users" \\
+     -H "apikey: $SERVICE_KEY" -H "Authorization: Bearer $SERVICE_KEY" \\
+     -H "Content-Type: application/json" \\
+     -d '{{"email":"test@example.com","password":"testpass123","email_confirm":true}}'
+
+2. Sign in as that user to get a JWT:
+   curl -X POST "{supabase_url}/auth/v1/token?grant_type=password" \\
+     -H "apikey: $ANON_KEY" -H "Content-Type: application/json" \\
+     -d '{{"email":"test@example.com","password":"testpass123"}}'
+
+3. Make data requests using anon key + JWT (NOT service key):
+   curl "{supabase_url}/rest/v1/TABLE_NAME" \\
+     -H "apikey: $ANON_KEY" -H "Authorization: Bearer $USER_JWT"
+
+4. Verify:
+   - Authenticated access works (no PGRST301 errors = GRANTs are correct)
+   - Users only see their own data (RLS policies work)
+   - Unauthenticated access is blocked
+
 5. Clean up the test user
 
-Report whether RLS is properly enforced.
+Report whether RLS is enforced AND whether table GRANTs are correct.
 """
 
 
@@ -648,6 +690,18 @@ def parse_plan(plan_text: str) -> list[dict]:
 RECOMMENDATION_KEYWORDS = ["WEB_SEARCH", "RUN_DIAGNOSTIC", "SKIP", "RETRY", "MODIFY_PLAN"]
 
 
+def strip_markdown(text: str) -> str:
+    """Strip common markdown formatting from text."""
+    import re
+    # Remove bold/italic markers (but not underscores within words like TEST_USER)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', text)  # *italic* (not mid-word)
+    text = re.sub(r'(?<!\w)__([^_]+)__(?!\w)', r'\1', text)  # __bold__ (not mid-word)
+    # Skip _italic_ - too likely to match SNAKE_CASE identifiers
+    text = re.sub(r'`([^`]+)`', r'\1', text)        # `code`
+    return text
+
+
 def parse_verification(verify_text: str) -> dict:
     """Parse the verifier's output into structured result."""
     result = {
@@ -659,7 +713,7 @@ def parse_verification(verify_text: str) -> dict:
     }
 
     for line in verify_text.split("\n"):
-        stripped = line.strip()
+        stripped = strip_markdown(line.strip())
         upper = stripped.upper()
 
         if upper.startswith("STATUS:"):
@@ -706,7 +760,7 @@ def parse_smoke_test(smoke_text: str) -> dict:
     }
 
     for line in smoke_text.split("\n"):
-        stripped = line.strip()
+        stripped = strip_markdown(line.strip())
         upper = stripped.upper()
 
         if upper.startswith("APP_STARTS:"):
@@ -758,7 +812,7 @@ def parse_migration_result(migration_text: str) -> dict:
     }
 
     for line in migration_text.split("\n"):
-        stripped = line.strip()
+        stripped = strip_markdown(line.strip())
         upper = stripped.upper()
 
         if upper.startswith("MIGRATIONS_FOUND:"):
@@ -790,12 +844,13 @@ def parse_rls_test_result(rls_text: str) -> dict:
         "tests_passed": 0,
         "status": "UNKNOWN",
         "rls_enforced": "UNKNOWN",
+        "grants_valid": "UNKNOWN",
         "errors": [],
         "summary": "",
     }
 
     for line in rls_text.split("\n"):
-        stripped = line.strip()
+        stripped = strip_markdown(line.strip())
         upper = stripped.upper()
 
         if upper.startswith("TEST_USER_CREATED:"):
@@ -822,6 +877,9 @@ def parse_rls_test_result(rls_text: str) -> dict:
                 result["rls_enforced"] = "PARTIAL"
             elif "NO" in val:
                 result["rls_enforced"] = "NO"
+        elif upper.startswith("GRANTS_VALID:"):
+            val = stripped.split(":", 1)[1].strip().upper()
+            result["grants_valid"] = "YES" if "YES" in val else "NO"
         elif upper.startswith("SUMMARY:"):
             result["summary"] = stripped.split(":", 1)[1].strip()
         elif stripped.startswith("- "):
@@ -1175,28 +1233,42 @@ def run_orchestration(
                             rls_emoji = {"YES": "✅", "NO": "❌", "PARTIAL": "⚠️", "UNKNOWN": "❓"}.get(
                                 rls["rls_enforced"], "❓"
                             )
+                            grants_emoji = {"YES": "✅", "NO": "❌", "UNKNOWN": "❓"}.get(
+                                rls["grants_valid"], "❓"
+                            )
                             print(f"\n  {rls_emoji} RLS enforced: {rls['rls_enforced']}")
+                            print(f"  {grants_emoji} GRANTs valid: {rls['grants_valid']}")
                             print(f"     Tests: {rls['tests_passed']}/{rls['tests_run']} passed")
                             if rls["errors"]:
                                 print(f"     Errors:")
                                 for err in rls["errors"]:
                                     print(f"       • {err}")
 
-                            if rls["status"] == "FAILED" or rls["rls_enforced"] == "NO":
+                            # Fail if RLS not enforced OR grants are missing
+                            rls_failed = rls["status"] == "FAILED" or rls["rls_enforced"] == "NO"
+                            grants_failed = rls["grants_valid"] == "NO"
+
+                            if rls_failed or grants_failed:
                                 resolution_count += 1
                                 if resolution_count < MAX_RESOLUTIONS_PER_STEP:
-                                    print(f"\n  🔄 RLS test failed, retrying step...")
+                                    failure_reason = []
+                                    if rls_failed:
+                                        failure_reason.append(f"RLS enforcement: {rls['rls_enforced']}")
+                                    if grants_failed:
+                                        failure_reason.append("Missing GRANT statements (PGRST301)")
+                                    print(f"\n  🔄 RLS/GRANT test failed, retrying step...")
                                     step["instructions"] += (
                                         f"\n\nRLS RUNTIME TEST FAILED:\n"
                                         + "\n".join(f"- {e}" for e in rls["errors"])
-                                        + f"\n\nFix the RLS policies so they properly restrict access. "
-                                        f"RLS enforcement status: {rls['rls_enforced']}"
+                                        + f"\n\nIssues: {', '.join(failure_reason)}"
+                                        + f"\n\nFix the RLS policies and ensure GRANT statements exist. "
+                                        f"Example: GRANT ALL ON tablename TO authenticated;"
                                     )
                                     continue  # Re-enter loop, retry implementation
                                 else:
-                                    print(f"\n  ❌ Max resolutions reached. Continuing with RLS issues.")
+                                    print(f"\n  ❌ Max resolutions reached. Continuing with RLS/GRANT issues.")
                                     completed_descriptions.append(
-                                        f"Step {step_num} ({step['title']}): Completed with RLS issues ({rls['rls_enforced']})"
+                                        f"Step {step_num} ({step['title']}): Completed with RLS/GRANT issues"
                                     )
                                     break
 
@@ -1609,15 +1681,18 @@ TESTS_RUN: 5
 TESTS_PASSED: 4
 STATUS: FAILED
 RLS_ENFORCED: PARTIAL
+GRANTS_VALID: NO
 ERRORS:
 - todos table allows public read
-SUMMARY: RLS mostly enforced, but todos readable by anyone."""
+- PGRST301: permission denied for table todos
+SUMMARY: RLS mostly enforced, but missing GRANT TO authenticated."""
         result5 = parse_rls_test_result(text5)
         assert result5["test_user_created"] == "YES"
         assert result5["tests_run"] == 5
         assert result5["tests_passed"] == 4
         assert result5["status"] == "FAILED"
         assert result5["rls_enforced"] == "PARTIAL"
+        assert result5["grants_valid"] == "NO"
         assert "todos table allows public read" in result5["errors"][0]
         print("PASS:", result5)
 
@@ -1646,6 +1721,19 @@ SUMMARY: App works but auth is broken."""
         assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in redacted
         assert "***REDACTED***" in redacted
         print("PASS: credential redaction works")
+
+        # Test markdown stripping in smoke test parser
+        text7 = """**APP_STARTS:** YES
+**TESTS_PASS:** NO
+**AUTH_WORKS:** N/A
+**ERRORS:**
+- Server crashed on startup
+**SUMMARY:** App fails to start due to missing config."""
+        result7 = parse_smoke_test(text7)
+        assert result7["app_starts"] == "YES"
+        assert result7["tests_pass"] == "NO"
+        assert result7["auth_works"] == "N/A"
+        print("PASS:", result7)
 
         sys.exit(0)
     main()
