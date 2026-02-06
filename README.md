@@ -15,12 +15,6 @@ By running the same build prompt multiple times and logging every step, tool cal
 
 The actionable output: identify where documentation, examples, or training data need improvement so these tools build correctly. The human prompt is held constant so you're measuring agent capability, not user skill.
 
-### What this doesn't measure
-
-- **Editing existing code.** All runs build greenfield projects. Both tools fail differently — and often worse — when modifying existing codebases where they can break unrelated code. That failure mode doesn't exist here
-- **Subtle correctness.** The smoke test catches "does it crash" but not "is the RLS policy actually secure" or "does the auth flow leak tokens." The verifier shares training-data blind spots with the implementer — when both learned the same wrong pattern, incorrect code passes verification
-- **Randomness vs gaps.** A single run is an anecdote. Run the same prompt 5-10 times. Consistent failures at the same step are knowledge gaps (addressable). Different failures every time mean the tool is guessing (not addressable with docs alone)
-
 ## How It Works
 
 ```
