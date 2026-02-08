@@ -223,6 +223,21 @@ def main():
         code, out, err = run_cmd(["supabase", "--version"])
         version = out.strip() or err.strip()
         check(f"supabase CLI: {version[:40]}", True)
+
+        # Check authentication status (needed for --supabase-project-ref)
+        access_token = os.environ.get("SUPABASE_ACCESS_TOKEN")
+        if access_token:
+            check("Authenticated via SUPABASE_ACCESS_TOKEN", True)
+        else:
+            # Try `supabase projects list` to check login status
+            print("    Checking login status...")
+            code, out, err = run_cmd(["supabase", "projects", "list"], timeout=30)
+            if code == 0:
+                check("Authenticated (logged in)", True)
+            else:
+                print("  ⚠️  Supabase CLI not authenticated")
+                print("     Required for --supabase-project-ref (Edge Functions)")
+                print("     Fix: Run 'supabase login' or set SUPABASE_ACCESS_TOKEN")
     else:
         print("  ⚠️  supabase CLI not found (optional)")
         print("     Edge Function deployment will be unavailable")
