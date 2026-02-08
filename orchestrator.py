@@ -757,6 +757,18 @@ Output ONLY the JSON object as specified. No commentary before or after.
 # Plan Parser
 # ─────────────────────────────────────────────
 
+def strip_markdown(text: str) -> str:
+    """Strip common markdown formatting from text."""
+    import re
+    # Remove bold/italic markers (but not underscores within words like TEST_USER)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', text)  # *italic* (not mid-word)
+    text = re.sub(r'(?<!\w)__([^_]+)__(?!\w)', r'\1', text)  # __bold__ (not mid-word)
+    # Skip _italic_ - too likely to match SNAKE_CASE identifiers
+    text = re.sub(r'`([^`]+)`', r'\1', text)        # `code`
+    return text
+
+
 def parse_plan(plan_text: str) -> list[dict]:
     """Parse the planner's output into structured steps."""
     steps = []
@@ -764,7 +776,7 @@ def parse_plan(plan_text: str) -> list[dict]:
     current_body = []
 
     for line in plan_text.split("\n"):
-        stripped = line.strip()
+        stripped = strip_markdown(line.strip())
 
         # Match "STEP N:" pattern
         if stripped.upper().startswith("STEP ") and ":" in stripped:
@@ -811,18 +823,6 @@ def parse_plan(plan_text: str) -> list[dict]:
 
 
 RECOMMENDATION_KEYWORDS = ["WEB_SEARCH", "RUN_DIAGNOSTIC", "SKIP", "RETRY", "MODIFY_PLAN"]
-
-
-def strip_markdown(text: str) -> str:
-    """Strip common markdown formatting from text."""
-    import re
-    # Remove bold/italic markers (but not underscores within words like TEST_USER)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
-    text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', text)  # *italic* (not mid-word)
-    text = re.sub(r'(?<!\w)__([^_]+)__(?!\w)', r'\1', text)  # __bold__ (not mid-word)
-    # Skip _italic_ - too likely to match SNAKE_CASE identifiers
-    text = re.sub(r'`([^`]+)`', r'\1', text)        # `code`
-    return text
 
 
 def extract_commands_from_events(events: list[dict]) -> list[dict]:
