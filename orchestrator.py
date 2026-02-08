@@ -1872,9 +1872,8 @@ If the app has authentication:
 
     approach_result = run_claude_code(
         prompt=approach_prompt,
-        project_dir=project_dir,
+        working_dir=project_dir,
         system_prompt=APPROACH_ANALYSIS_SYSTEM_PROMPT,
-        output_format="text",
     )
 
     log_step(store, run_id, len(steps) + 2, "approach_analysis", "claude_code",
