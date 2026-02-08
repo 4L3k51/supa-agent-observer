@@ -92,6 +92,7 @@ class SupabaseStorage:
         prompt_sent: str, raw_stdout: str, raw_stderr: str,
         parsed_result: str, exit_code: int, duration_seconds: float,
         build_phase: Optional[str] = None,
+        commands_executed: Optional[list] = None,
     ) -> int:
         """Log a step and return the step ID. Raises on failure."""
         result = self.client.table("orchestrator_steps").insert({
@@ -106,6 +107,7 @@ class SupabaseStorage:
             "exit_code": exit_code,
             "duration_seconds": duration_seconds,
             "build_phase": build_phase,
+            "commands_executed": commands_executed,
             "timestamp": _now(),
         }).execute()
 

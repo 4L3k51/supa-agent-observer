@@ -629,6 +629,50 @@ Test plan:
 Report whether RLS is enforced AND whether table GRANTs are correct.
 """
 
+EDGE_FUNCTION_DEPLOY_SYSTEM_PROMPT = """\
+You are deploying and testing Supabase Edge Functions.
+
+RULES:
+- Find all Edge Functions in the project (supabase/functions/*/index.ts)
+- Deploy each function using: supabase functions deploy <function_name>
+- After deployment, test each function with curl
+- For functions requiring auth, use the service_role key
+- Report deployment status and invocation results
+
+FORMAT your response as:
+FUNCTIONS_FOUND: [number]
+FUNCTIONS_DEPLOYED: [number]
+FUNCTIONS_TESTED: [number]
+STATUS: SUCCESS | FAILED
+ERRORS (if any):
+- [error 1]
+- [error 2]
+
+SUMMARY: [1-2 sentence assessment]
+"""
+
+EDGE_FUNCTION_DEPLOY_PROMPT_TEMPLATE = """\
+Deploy and test the Edge Functions created in this step.
+
+STEP: {step_number} - {step_title}
+
+SUPABASE_URL: {supabase_url}
+SUPABASE_ANON_KEY: {supabase_anon_key}
+SUPABASE_SERVICE_KEY: {supabase_service_key}
+
+Steps:
+1. Find Edge Functions in supabase/functions/
+2. Deploy each with: supabase functions deploy <name>
+3. Test each with curl:
+   curl -X POST "{supabase_url}/functions/v1/<name>" \\
+     -H "Authorization: Bearer {supabase_service_key}" \\
+     -H "Content-Type: application/json" \\
+     -d '{{}}'
+4. Verify 2xx response
+
+Report which functions were deployed and tested.
+"""
+
 
 # ─────────────────────────────────────────────
 # Plan Parser
@@ -700,6 +744,46 @@ def strip_markdown(text: str) -> str:
     # Skip _italic_ - too likely to match SNAKE_CASE identifiers
     text = re.sub(r'`([^`]+)`', r'\1', text)        # `code`
     return text
+
+
+def extract_commands_from_events(events: list[dict]) -> list[dict]:
+    """Extract executed shell commands from CLI result events.
+
+    Returns a list of command records:
+    [{"command": "npm install", "tool": "Bash"}, ...]
+    """
+    commands = []
+
+    for event in events:
+        event_type = event.get("type", "")
+
+        # Claude Code format: tool_use or tool_call events
+        if event_type in ("tool_use", "tool_call"):
+            tool_name = event.get("name", "") or event.get("tool", "")
+            tool_input = event.get("input", {}) or event.get("args", {})
+
+            if tool_name == "Bash":
+                cmd = tool_input.get("command", "")
+                if cmd:
+                    commands.append({"command": cmd, "tool": "Bash"})
+
+            # Also check nested tool_call object
+            nested = event.get("tool_call", {})
+            if nested:
+                if "terminalToolCall" in nested:
+                    cmd = nested["terminalToolCall"].get("args", {}).get("command", "")
+                    if cmd:
+                        commands.append({"command": cmd, "tool": "terminal"})
+
+        # Cursor format: may have tool_call at top level with different structure
+        tool_call = event.get("tool_call", {})
+        if tool_call and event_type not in ("tool_use", "tool_call"):
+            if "terminalToolCall" in tool_call:
+                cmd = tool_call["terminalToolCall"].get("args", {}).get("command", "")
+                if cmd:
+                    commands.append({"command": cmd, "tool": "terminal"})
+
+    return commands
 
 
 def parse_verification(verify_text: str) -> dict:
@@ -888,6 +972,47 @@ def parse_rls_test_result(rls_text: str) -> dict:
     return result
 
 
+def parse_edge_function_result(ef_text: str) -> dict:
+    """Parse the Edge Function deployer's output."""
+    result = {
+        "functions_found": 0,
+        "functions_deployed": 0,
+        "functions_tested": 0,
+        "status": "UNKNOWN",
+        "errors": [],
+        "summary": "",
+    }
+
+    for line in ef_text.split("\n"):
+        stripped = strip_markdown(line.strip())
+        upper = stripped.upper()
+
+        if upper.startswith("FUNCTIONS_FOUND:"):
+            try:
+                result["functions_found"] = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+        elif upper.startswith("FUNCTIONS_DEPLOYED:"):
+            try:
+                result["functions_deployed"] = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+        elif upper.startswith("FUNCTIONS_TESTED:"):
+            try:
+                result["functions_tested"] = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+        elif upper.startswith("STATUS:"):
+            val = stripped.split(":", 1)[1].strip().upper()
+            result["status"] = "SUCCESS" if "SUCCESS" in val else "FAILED"
+        elif upper.startswith("SUMMARY:"):
+            result["summary"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("- "):
+            result["errors"].append(stripped[2:])
+
+    return result
+
+
 def redact_credentials(text: str, credentials: dict) -> str:
     """Redact credential values from text for safe logging."""
     redacted = text
@@ -902,6 +1027,20 @@ def check_psql_available() -> bool:
     try:
         result = subprocess.run(
             ["psql", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def check_supabase_cli_available() -> bool:
+    """Check if supabase CLI is available in the system PATH."""
+    try:
+        result = subprocess.run(
+            ["supabase", "--version"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -952,8 +1091,12 @@ def write_env_local(
 
 def log_step(store: SupabaseStorage, run_id: str, step_number: int,
              phase: str, tool: str, prompt: str, result: CLIResult,
-             build_phase: Optional[str] = None) -> int:
+             build_phase: Optional[str] = None,
+             commands_executed: Optional[list] = None) -> int:
     """Log a step to storage. Returns step ID."""
+    if commands_executed is None and result.events:
+        commands_executed = extract_commands_from_events(result.events)
+
     step_id = store.log_step(
         run_id=run_id,
         step_number=step_number,
@@ -966,6 +1109,7 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
         exit_code=result.exit_code,
         duration_seconds=result.duration,
         build_phase=build_phase,
+        commands_executed=commands_executed,
     )
 
     # Batch insert events for performance - step must exist first (FK constraint)
@@ -990,6 +1134,7 @@ def run_orchestration(
     target_supabase_anon_key: Optional[str] = None,
     target_supabase_service_key: Optional[str] = None,
     target_supabase_db_url: Optional[str] = None,
+    target_supabase_project_ref: Optional[str] = None,
 ):
     """
     Main orchestration loop:
@@ -1064,6 +1209,29 @@ def run_orchestration(
     for step in steps:
         print(f"   Step {step['number']}: {step['title']}")
 
+    # Link Supabase project if ref provided
+    supabase_cli_available = False
+    if target_supabase_project_ref:
+        if check_supabase_cli_available():
+            supabase_cli_available = True
+            print(f"\n  ▶ Linking Supabase project: {target_supabase_project_ref}")
+            link_result = subprocess.run(
+                ["supabase", "link", "--project-ref", target_supabase_project_ref],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if link_result.returncode == 0:
+                print(f"  ✓ Supabase project linked")
+            else:
+                print(f"  ⚠️  Supabase link failed: {link_result.stderr[:200]}")
+                print(f"     Edge Function deployment will be skipped")
+                supabase_cli_available = False
+        else:
+            print(f"\n  ⚠️  Supabase CLI not found - skipping project link")
+            print(f"     Install with: brew install supabase/tap/supabase")
+
     # ── Phase 2: Implementation Loop ──────────────
     start = (start_from_step or 1) - 1
     completed_descriptions = []
@@ -1078,6 +1246,7 @@ def run_orchestration(
         "supabase_anon_key": target_supabase_anon_key,
         "supabase_service_key": target_supabase_service_key,
         "supabase_db_url": target_supabase_db_url,
+        "supabase_project_ref": target_supabase_project_ref,
     }
 
     for idx, step in enumerate(steps[start:], start=start):
@@ -1304,6 +1473,65 @@ def run_orchestration(
                                         f"Step {step_num} ({step['title']}): Completed with RLS/GRANT issues"
                                     )
                                     break
+
+                # ── Run Edge Function deployment for backend steps ──────
+                is_backend_step = step.get("build_phase") == "backend"
+                has_function_creds = (
+                    supabase_cli_available
+                    and target_supabase_url
+                    and target_supabase_service_key
+                )
+
+                if is_backend_step and has_function_creds:
+                    print(f"\n  ▶ Deploying Edge Functions...")
+                    print(f"  {'─' * 50}")
+
+                    ef_prompt = EDGE_FUNCTION_DEPLOY_PROMPT_TEMPLATE.format(
+                        step_number=step_num,
+                        step_title=step["title"],
+                        supabase_url=target_supabase_url,
+                        supabase_anon_key=target_supabase_anon_key or "",
+                        supabase_service_key=target_supabase_service_key,
+                    )
+
+                    ef_result = run_claude_code(
+                        prompt=ef_prompt,
+                        working_dir=project_dir,
+                        system_prompt=EDGE_FUNCTION_DEPLOY_SYSTEM_PROMPT,
+                    )
+
+                    redacted_ef_prompt = redact_credentials(
+                        ef_prompt, credentials_to_redact
+                    )
+                    log_step(store, run_id, step_num, "edge_function_deploy", "claude_code",
+                             redacted_ef_prompt, ef_result, build_phase=step.get("build_phase"))
+
+                    ef = parse_edge_function_result(ef_result.text_result)
+
+                    ef_emoji = "✅" if ef["status"] == "SUCCESS" else "❌"
+                    print(f"\n  {ef_emoji} Edge Functions: {ef['status']}")
+                    print(f"     Found: {ef['functions_found']}, Deployed: {ef['functions_deployed']}, Tested: {ef['functions_tested']}")
+                    if ef["errors"]:
+                        print(f"     Errors:")
+                        for err in ef["errors"]:
+                            print(f"       • {err}")
+
+                    if ef["status"] == "FAILED":
+                        resolution_count += 1
+                        if resolution_count < MAX_RESOLUTIONS_PER_STEP:
+                            print(f"\n  🔄 Edge Function deployment failed, retrying step...")
+                            step["instructions"] += (
+                                f"\n\nEDGE FUNCTION DEPLOYMENT FAILED:\n"
+                                + "\n".join(f"- {e}" for e in ef["errors"])
+                                + f"\n\nFix the Edge Function code so it deploys and returns 2xx."
+                            )
+                            continue
+                        else:
+                            print(f"\n  ❌ Max resolutions reached. Continuing with Edge Function issues.")
+                            completed_descriptions.append(
+                                f"Step {step_num} ({step['title']}): Completed with Edge Function issues"
+                            )
+                            break
 
                 # Step fully passed (including runtime if applicable)
                 completed_descriptions.append(
@@ -1593,6 +1821,8 @@ def main():
                         help="Target Supabase service_role key (for auth and admin operations)")
     parser.add_argument("--supabase-db-url", default=None,
                         help="Target Supabase Postgres connection string (for migrations)")
+    parser.add_argument("--supabase-project-ref", default=None,
+                        help="Supabase project ref for CLI operations (enables Edge Function deployment)")
     parser.add_argument("--list-runs", action="store_true",
                         help="List all runs")
     parser.add_argument("--claude-model", default=None,
@@ -1638,6 +1868,7 @@ def main():
         target_supabase_anon_key=args.supabase_anon_key,
         target_supabase_service_key=args.supabase_service_key,
         target_supabase_db_url=args.supabase_db_url,
+        target_supabase_project_ref=args.supabase_project_ref,
     )
 
 
@@ -1728,6 +1959,22 @@ SUMMARY: RLS mostly enforced, but missing GRANT TO authenticated."""
         assert result5["grants_valid"] == "NO"
         assert "todos table allows public read" in result5["errors"][0]
         print("PASS:", result5)
+
+        # Test Edge Function result parsing
+        text_ef = """FUNCTIONS_FOUND: 2
+FUNCTIONS_DEPLOYED: 2
+FUNCTIONS_TESTED: 1
+STATUS: FAILED
+ERRORS:
+- hello-world returned 500 Internal Server Error
+SUMMARY: Deployed but one function crashes."""
+        result_ef = parse_edge_function_result(text_ef)
+        assert result_ef["functions_found"] == 2
+        assert result_ef["functions_deployed"] == 2
+        assert result_ef["functions_tested"] == 1
+        assert result_ef["status"] == "FAILED"
+        assert "500" in result_ef["errors"][0]
+        print("PASS:", result_ef)
 
         # Test smoke test with auth
         text6 = """APP_STARTS: YES

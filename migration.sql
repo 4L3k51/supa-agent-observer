@@ -105,6 +105,20 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS idx_steps_build_phase ON orchestrator_steps(build_phase);
 
+-- Migration: add commands_executed column if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'commands_executed'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN commands_executed JSONB;
+    END IF;
+END $$;
+
+-- Index for querying commands
+CREATE INDEX IF NOT EXISTS idx_steps_commands ON orchestrator_steps USING GIN (commands_executed);
+
 
 -- ============================================================
 -- Useful views for analysis
@@ -168,3 +182,20 @@ FROM orchestrator_events e
 WHERE e.event_type = 'tool_call'
 GROUP BY e.run_id, e.event_type, subtype, tool_name
 ORDER BY call_count DESC;
+
+-- Commands view: what shell commands were executed per step
+CREATE OR REPLACE VIEW orchestrator_commands AS
+SELECT
+    s.run_id,
+    s.step_number,
+    s.phase,
+    s.build_phase,
+    s.tool,
+    cmd->>'command' AS command,
+    cmd->>'tool' AS command_tool,
+    s.exit_code,
+    s.parsed_result LIKE '%SUCCESS%' AS succeeded,
+    s.timestamp
+FROM orchestrator_steps s,
+     jsonb_array_elements(COALESCE(s.commands_executed, '[]'::jsonb)) AS cmd
+ORDER BY s.timestamp, s.step_number;
