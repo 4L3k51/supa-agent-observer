@@ -145,6 +145,19 @@ def main():
                 f"Error: {err[:100]}"
             )
 
+    # ── Supabase CLI (optional) ──
+    print("\n  Supabase CLI (optional):")
+
+    supabase_path = shutil.which("supabase")
+    if supabase_path:
+        code, out, err = run_cmd(["supabase", "--version"])
+        version = out.strip() or err.strip()
+        check(f"supabase CLI: {version[:40]}", True)
+    else:
+        print("  ⚠️  supabase CLI not found (optional)")
+        print("     Edge Function deployment will be unavailable")
+        print("     Install: brew install supabase/tap/supabase")
+
     # ── Project directory ──
     print("\n  Environment:")
 
@@ -163,8 +176,9 @@ def main():
     else:
         print("  ❌ SOME CHECKS FAILED - Fix the issues above first.")
         print(f"\n  Quick install commands:")
-        print(f"    Claude Code: npm install -g @anthropic-ai/claude-code")
-        print(f"    Cursor CLI:  curl https://cursor.com/install -fsSL | bash")
+        print(f"    Claude Code:   npm install -g @anthropic-ai/claude-code")
+        print(f"    Cursor CLI:    curl https://cursor.com/install -fsSL | bash")
+        print(f"    Supabase CLI:  brew install supabase/tap/supabase")
     print()
 
 
