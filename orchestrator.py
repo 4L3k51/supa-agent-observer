@@ -382,6 +382,11 @@ TABLE PERMISSIONS (critical for RLS to work):
 - Without GRANTs, the PostgREST API returns PGRST301 "permission denied" errors
 - The service_role key bypasses GRANTs, so missing GRANTs only show up at runtime
 
+AVOID DUPLICATE STEPS:
+- Before finalizing the plan, review each step and remove any that duplicate work from earlier steps
+- If step N will naturally be completed as part of step M, merge them into a single step
+- Common duplicates to avoid: "install dependencies" repeated, "create component" then "add component to page" when the first step already does both
+
 FORMAT your response as:
 STEP 1: [title]
 PHASE: [one of: setup, schema, backend, frontend, testing, deployment]
@@ -673,6 +678,80 @@ Steps:
 Report which functions were deployed and tested.
 """
 
+APPROACH_ANALYSIS_SYSTEM_PROMPT = """\
+You are an APPROACH ANALYZER in an automated coding pipeline. Your job is to examine
+the completed project and document what technical choices were made.
+
+DO NOT judge whether choices are good or bad — just observe and report what was chosen.
+
+ANALYSIS STEPS:
+1. Read package.json, requirements.txt, Cargo.toml, go.mod, or equivalent dependency files
+2. Check git log for initial commits that might reveal scaffolding (create-next-app, etc.)
+3. Look at lock files (package-lock.json, yarn.lock, pnpm-lock.yaml) for dependency versions
+4. Examine project structure patterns to identify frameworks and starters
+5. Find Supabase integration code and identify which client library is used
+6. Identify authentication pattern (client-side, SSR, middleware, etc.)
+7. Check for ORM usage vs raw SQL
+
+OUTPUT FORMAT (must be valid JSON):
+```json
+{
+  "dependencies": {
+    "runtime": ["package@version", ...],
+    "dev": ["package@version", ...],
+    "source_file": "package.json"
+  },
+  "scaffolding": {
+    "tool": "create-next-app | create-vite | manual | etc",
+    "template": "template name if any",
+    "evidence": "how you determined this"
+  },
+  "framework": {
+    "name": "Next.js | React | Vue | Svelte | etc",
+    "version": "version",
+    "rendering": "CSR | SSR | SSG | hybrid"
+  },
+  "supabase_integration": {
+    "client_library": "@supabase/supabase-js | @supabase/ssr | raw fetch | none",
+    "version": "version if applicable",
+    "auth_pattern": "client-side | SSR | middleware | server-actions | none",
+    "database_access": "supabase-js | prisma | drizzle | raw SQL | none",
+    "realtime_used": true | false,
+    "edge_functions_used": true | false,
+    "storage_used": true | false
+  },
+  "architecture": {
+    "api_pattern": "REST | tRPC | GraphQL | server-actions | direct-db",
+    "state_management": "React context | Redux | Zustand | none | etc",
+    "styling": "Tailwind | CSS Modules | styled-components | etc",
+    "testing": "Jest | Vitest | Playwright | none | etc"
+  },
+  "file_structure": {
+    "src_directory": true | false,
+    "app_router": true | false,
+    "pages_router": true | false,
+    "monorepo": true | false
+  }
+}
+```
+
+If a field cannot be determined, use null. Be precise about versions when available.
+"""
+
+APPROACH_ANALYSIS_PROMPT_TEMPLATE = """\
+Analyze the technical approach used in this completed project.
+
+PROJECT GOAL: {user_prompt}
+
+Examine the project files and document:
+1. What dependencies were installed (read package.json, requirements.txt, etc.)
+2. What scaffolding or starter template was used (check git history, project structure)
+3. What framework and architecture patterns were chosen
+4. How Supabase was integrated (which client library, auth pattern, etc.)
+
+Output ONLY the JSON object as specified. No commentary before or after.
+"""
+
 
 # ─────────────────────────────────────────────
 # Plan Parser
@@ -881,6 +960,61 @@ def parse_smoke_test(smoke_text: str) -> dict:
 
         elif stripped.startswith("- ") and result["app_starts"] != "UNKNOWN":
             result["errors"].append(stripped[2:])
+
+    return result
+
+
+def parse_approach_analysis(analysis_text: str) -> dict:
+    """Parse the approach analyzer's JSON output."""
+    result = {
+        "dependencies": None,
+        "scaffolding": None,
+        "framework": None,
+        "supabase_integration": None,
+        "architecture": None,
+        "file_structure": None,
+        "parse_error": None,
+    }
+
+    # Try to extract JSON from the response (may be wrapped in markdown code blocks)
+    text = analysis_text.strip()
+
+    # Remove markdown code block if present
+    if "```json" in text:
+        start = text.find("```json") + 7
+        end = text.find("```", start)
+        if end > start:
+            text = text[start:end].strip()
+    elif "```" in text:
+        start = text.find("```") + 3
+        end = text.find("```", start)
+        if end > start:
+            text = text[start:end].strip()
+
+    # Try to find JSON object boundaries
+    if "{" in text:
+        start = text.find("{")
+        # Find matching closing brace
+        depth = 0
+        end = start
+        for i, char in enumerate(text[start:], start):
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        text = text[start:end]
+
+    try:
+        parsed = json.loads(text)
+        # Merge parsed fields into result
+        for key in result:
+            if key != "parse_error" and key in parsed:
+                result[key] = parsed[key]
+    except json.JSONDecodeError as e:
+        result["parse_error"] = f"Failed to parse JSON: {str(e)[:100]}"
 
     return result
 
@@ -1727,9 +1861,49 @@ If the app has authentication:
         print(f"\n  ⏭  Smoke test skipped (--skip-smoke-test)")
         run_final_status = "completed"
 
-    # ── Phase 4: Completion ───────────────────────
+    # ── Phase 4: Approach Analysis ───────────────────────
     print(f"\n{'=' * 60}")
-    print("  ORCHESTRATION COMPLETE")
+    print("  PHASE 4: APPROACH ANALYSIS (Claude Code)")
+    print(f"{'=' * 60}")
+
+    approach_prompt = APPROACH_ANALYSIS_PROMPT_TEMPLATE.format(
+        user_prompt=user_prompt,
+    )
+
+    approach_result = run_claude_code(
+        prompt=approach_prompt,
+        project_dir=project_dir,
+        system_prompt=APPROACH_ANALYSIS_SYSTEM_PROMPT,
+        output_format="text",
+    )
+
+    log_step(store, run_id, len(steps) + 2, "approach_analysis", "claude_code",
+             approach_prompt, approach_result)
+
+    approach = parse_approach_analysis(approach_result.text_result)
+
+    if approach["parse_error"]:
+        print(f"\n  ⚠️  Could not parse approach analysis: {approach['parse_error']}")
+    else:
+        print("\n  Analysis complete. Findings:")
+        if approach["framework"]:
+            fw = approach["framework"]
+            print(f"    Framework: {fw.get('name', 'unknown')} {fw.get('version', '')}")
+        if approach["scaffolding"]:
+            sc = approach["scaffolding"]
+            print(f"    Scaffolding: {sc.get('tool', 'unknown')}")
+        if approach["supabase_integration"]:
+            sb = approach["supabase_integration"]
+            print(f"    Supabase client: {sb.get('client_library', 'unknown')}")
+            print(f"    Auth pattern: {sb.get('auth_pattern', 'unknown')}")
+        if approach["architecture"]:
+            arch = approach["architecture"]
+            print(f"    API pattern: {arch.get('api_pattern', 'unknown')}")
+            print(f"    Styling: {arch.get('styling', 'unknown')}")
+
+    # ── Phase 5: Completion ───────────────────────
+    print(f"\n{'=' * 60}")
+    print("  PHASE 5: COMPLETE")
     print(f"{'=' * 60}")
 
     store.finish_run(run_id, status=run_final_status)
