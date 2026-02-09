@@ -119,6 +119,20 @@ END $$;
 -- Index for querying commands
 CREATE INDEX IF NOT EXISTS idx_steps_commands ON orchestrator_steps USING GIN (commands_executed);
 
+-- Migration: add errors_normalized column if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'errors_normalized'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN errors_normalized JSONB;
+    END IF;
+END $$;
+
+-- Index for querying errors
+CREATE INDEX IF NOT EXISTS idx_steps_errors ON orchestrator_steps USING GIN (errors_normalized);
+
 
 -- ============================================================
 -- Useful views for analysis

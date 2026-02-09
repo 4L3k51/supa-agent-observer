@@ -44,7 +44,8 @@ REQUIRED_SCHEMA = {
     "orchestrator_steps": [
         "id", "run_id", "step_number", "phase", "tool", "prompt_sent",
         "raw_stdout", "raw_stderr", "parsed_result", "exit_code",
-        "duration_seconds", "build_phase", "timestamp", "commands_executed"
+        "duration_seconds", "build_phase", "timestamp", "commands_executed",
+        "errors_normalized"
     ],
     "orchestrator_events": ["id", "run_id", "step_id", "event_type", "event_data", "timestamp"],
 }

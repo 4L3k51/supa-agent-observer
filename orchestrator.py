@@ -831,6 +831,122 @@ def parse_plan(plan_text: str) -> list[dict]:
 RECOMMENDATION_KEYWORDS = ["WEB_SEARCH", "RUN_DIAGNOSTIC", "SKIP", "RETRY", "MODIFY_PLAN"]
 
 
+def extract_normalized_errors(
+    phase: str,
+    tool: str,
+    exit_code: int,
+    stderr: str,
+    parsed_result: str,
+    parsed_errors: list[str],
+) -> list[dict]:
+    """Extract and normalize errors from step outputs.
+
+    Returns a list of error records:
+    [{"type": "RLS_ERROR", "message": "...", "source": "stderr", "phase": "...", "tool": "..."}, ...]
+    """
+    errors = []
+
+    # Helper to classify error type based on message content
+    def classify_error(msg: str) -> str:
+        msg_lower = msg.lower()
+        if any(k in msg_lower for k in ["pgrst", "permission denied", "rls", "policy"]):
+            return "RLS_ERROR"
+        if any(k in msg_lower for k in ["grant", "role", "authenticated"]):
+            return "GRANT_ERROR"
+        if any(k in msg_lower for k in ["syntax error", "parse error", "unexpected token"]):
+            return "SYNTAX_ERROR"
+        if any(k in msg_lower for k in ["cannot find module", "module not found", "no such file"]):
+            return "IMPORT_ERROR"
+        if any(k in msg_lower for k in ["type error", "typescript", "is not assignable"]):
+            return "TYPE_ERROR"
+        if any(k in msg_lower for k in ["build failed", "compilation failed", "esbuild"]):
+            return "BUILD_ERROR"
+        if any(k in msg_lower for k in ["timeout", "timed out"]):
+            return "TIMEOUT_ERROR"
+        if any(k in msg_lower for k in ["connection refused", "econnrefused", "network"]):
+            return "NETWORK_ERROR"
+        if any(k in msg_lower for k in ["already exists", "duplicate"]):
+            return "DUPLICATE_ERROR"
+        if any(k in msg_lower for k in ["not found", "404", "does not exist"]):
+            return "NOT_FOUND_ERROR"
+        if any(k in msg_lower for k in ["unauthorized", "401", "403", "forbidden"]):
+            return "AUTH_ERROR"
+        if any(k in msg_lower for k in ["500", "internal server", "failed"]):
+            return "SERVER_ERROR"
+        return "UNKNOWN_ERROR"
+
+    # Helper to extract file/line from error message
+    def extract_location(msg: str) -> dict:
+        location = {}
+        # Pattern: /path/to/file.ts:42:10 or file.ts(42,10)
+        import re
+        # Node/TS style: /path/file.ts:42:10
+        match = re.search(r'([/\w.-]+\.[a-z]+):(\d+)(?::(\d+))?', msg)
+        if match:
+            location["file"] = match.group(1)
+            location["line"] = int(match.group(2))
+            if match.group(3):
+                location["column"] = int(match.group(3))
+        # Postgres style: at line 42
+        if not location:
+            match = re.search(r'at line (\d+)', msg, re.IGNORECASE)
+            if match:
+                location["line"] = int(match.group(1))
+        # Error code extraction (PGRST301, TS2345, etc.)
+        code_match = re.search(r'\b(PGRST\d+|TS\d+|E\d+)\b', msg)
+        if code_match:
+            location["code"] = code_match.group(1)
+        return location
+
+    # Process stderr if present
+    if stderr and stderr.strip():
+        for line in stderr.split("\n"):
+            line = line.strip()
+            if line and any(k in line.lower() for k in ["error", "fail", "exception", "pgrst"]):
+                error = {
+                    "type": classify_error(line),
+                    "message": line[:500],  # Truncate long messages
+                    "source": "stderr",
+                    "phase": phase,
+                    "tool": tool,
+                }
+                error.update(extract_location(line))
+                errors.append(error)
+
+    # Process parsed errors from AI output
+    for err_msg in parsed_errors:
+        error = {
+            "type": classify_error(err_msg),
+            "message": err_msg[:500],
+            "source": "parsed",
+            "phase": phase,
+            "tool": tool,
+        }
+        error.update(extract_location(err_msg))
+        errors.append(error)
+
+    # If exit_code != 0 but no errors found, add a generic one
+    if exit_code != 0 and not errors:
+        errors.append({
+            "type": "EXIT_ERROR",
+            "message": f"Process exited with code {exit_code}",
+            "source": "exit_code",
+            "phase": phase,
+            "tool": tool,
+            "code": str(exit_code),
+        })
+
+    # Deduplicate by message
+    seen = set()
+    unique_errors = []
+    for err in errors:
+        if err["message"] not in seen:
+            seen.add(err["message"])
+            unique_errors.append(err)
+
+    return unique_errors
+
+
 def extract_commands_from_events(events: list[dict]) -> list[dict]:
     """Extract executed shell commands from CLI result events.
 
@@ -1262,13 +1378,25 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
              phase: str, tool: str, prompt: str, result: CLIResult,
              build_phase: Optional[str] = None,
              commands_executed: Optional[list] = None,
-             credentials_to_redact: Optional[dict] = None) -> int:
+             credentials_to_redact: Optional[dict] = None,
+             parsed_errors: Optional[list] = None) -> int:
     """Log a step to storage. Returns step ID.
 
     If credentials_to_redact is provided, all text fields will be redacted.
+    If parsed_errors is provided, they will be included in normalized errors.
     """
     if commands_executed is None and result.events:
         commands_executed = extract_commands_from_events(result.events)
+
+    # Extract normalized errors
+    errors_normalized = extract_normalized_errors(
+        phase=phase,
+        tool=tool,
+        exit_code=result.exit_code,
+        stderr=result.stderr or "",
+        parsed_result=result.text_result or "",
+        parsed_errors=parsed_errors or [],
+    )
 
     # Redact credentials from all text fields
     prompt_redacted = prompt
@@ -1290,6 +1418,13 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
             events_json_redacted = redact_credentials(events_json, credentials_to_redact)
             events_redacted = json.loads(events_json_redacted)
 
+        # Redact credentials from normalized errors too
+        if errors_normalized:
+            import json
+            errors_json = json.dumps(errors_normalized)
+            errors_json_redacted = redact_credentials(errors_json, credentials_to_redact)
+            errors_normalized = json.loads(errors_json_redacted)
+
     step_id = store.log_step(
         run_id=run_id,
         step_number=step_number,
@@ -1303,6 +1438,7 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
         duration_seconds=result.duration,
         build_phase=build_phase,
         commands_executed=commands_executed,
+        errors_normalized=errors_normalized if errors_normalized else None,
     )
 
     # Batch insert events for performance - step must exist first (FK constraint)
