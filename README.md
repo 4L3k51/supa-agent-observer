@@ -65,18 +65,17 @@ Two separate counters control the loop per step:
 
 ## What Gets Logged
 
-Everything is stored as JSONB in Supabase, queryable with SQL:
+Everything is stored as JSONB in Supabase and queryable with SQL:
 
-- Tool calls (`shellToolCall`, `editToolCall`, `readToolCall`, `WebSearch`, `WebFetch`)
-- File diffs (full before/after content for every edit)
-- Bash output (stdout, stderr, exit codes, execution time)
-- Verification verdicts (PASS/FAIL/PARTIAL with reasoning and resolution strategy)
-- Research actions (web search queries and findings)
-- Diagnostic runs (command, stdout/stderr, exit code)
-- Build phase per step (`setup`, `schema`, `backend`, `frontend`, `testing`, `deployment`)
-- Token usage (input/output tokens, cache hits, model used)
-- Errors and retries
-- Timing per step, per phase, per API call
+- **Runs & steps**: run metadata + step records (phase, tool, build_phase, duration, timestamps)
+- **Commands executed**: shell commands run per step (also included in EXIT_ERROR for debugging)
+- **Process output**: stdout/stderr + exit code per step
+- **Tool calls/events**: tool events (Read, Write, Edit, Bash, WebSearch, WebFetch) stored in `orchestrator_events`
+- **Verification verdicts**: PASS/FAIL/PARTIAL in parsed_result with reasoning
+- **Normalized errors**:
+  - `PARSED_ERROR`: explicit errors from AI output
+  - `EXIT_ERROR`: non-zero exit code + stderr tail + commands_run
+- **Timing**: duration per step
 
 ## Quick Start
 
