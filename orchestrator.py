@@ -131,7 +131,12 @@ def run_tool(tool: str, prompt: str, working_dir: str, system_prompt: Optional[s
     if tool == "claude":
         return run_claude_code(prompt, working_dir, system_prompt=system_prompt, **kwargs)
     elif tool == "cursor":
-        return run_cursor_agent(prompt, working_dir, **kwargs)
+        # Cursor doesn't support system prompts natively, so prepend to the main prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n---\n\n{prompt}"
+        else:
+            full_prompt = prompt
+        return run_cursor_agent(full_prompt, working_dir, **kwargs)
     else:
         raise ValueError(f"Unknown tool: {tool}")
 
@@ -1479,6 +1484,7 @@ def run_orchestration(
     skip_smoke_test: bool = False,
     planner_tool: str = "claude",
     implementer_tool: str = "cursor",
+    verifier_tool: str = "claude",
     target_supabase_url: Optional[str] = None,
     target_supabase_anon_key: Optional[str] = None,
     target_supabase_service_key: Optional[str] = None,
@@ -1654,13 +1660,14 @@ def run_orchestration(
                 implementer_output=impl_result.text_result[:3000],
             )
 
-            verify_result = run_claude_code(
+            verify_result = run_tool(
+                verifier_tool,
                 prompt=verify_prompt,
                 working_dir=project_dir,
                 system_prompt=VERIFIER_SYSTEM_PROMPT,
             )
 
-            log_step(store, run_id, step_num, "verify", "claude_code",
+            log_step(store, run_id, step_num, "verify", verifier_tool,
                      verify_prompt, verify_result, build_phase=step.get("build_phase"))
 
             verification = parse_verification(verify_result.text_result)
@@ -1705,7 +1712,8 @@ def run_orchestration(
                             db_url=target_supabase_db_url,
                         )
 
-                        migration_result = run_claude_code(
+                        migration_result = run_tool(
+                            verifier_tool,
                             prompt=migration_prompt,
                             working_dir=project_dir,
                             system_prompt=MIGRATION_EXEC_SYSTEM_PROMPT,
@@ -1715,7 +1723,7 @@ def run_orchestration(
                         redacted_migration_prompt = redact_credentials(
                             migration_prompt, credentials_to_redact
                         )
-                        log_step(store, run_id, step_num, "migration_exec", "claude_code",
+                        log_step(store, run_id, step_num, "migration_exec", verifier_tool,
                                  redacted_migration_prompt, migration_result, build_phase="schema")
 
                         migration = parse_migration_result(migration_result.text_result)
@@ -1758,7 +1766,8 @@ def run_orchestration(
                                 supabase_service_key=target_supabase_service_key,
                             )
 
-                            rls_result = run_claude_code(
+                            rls_result = run_tool(
+                                verifier_tool,
                                 prompt=rls_prompt,
                                 working_dir=project_dir,
                                 system_prompt=RLS_TEST_SYSTEM_PROMPT,
@@ -1768,7 +1777,7 @@ def run_orchestration(
                             redacted_rls_prompt = redact_credentials(
                                 rls_prompt, credentials_to_redact
                             )
-                            log_step(store, run_id, step_num, "rls_test", "claude_code",
+                            log_step(store, run_id, step_num, "rls_test", verifier_tool,
                                      redacted_rls_prompt, rls_result, build_phase="schema")
 
                             rls = parse_rls_test_result(rls_result.text_result)
@@ -1839,7 +1848,8 @@ def run_orchestration(
                         supabase_service_key=target_supabase_service_key,
                     )
 
-                    ef_result = run_claude_code(
+                    ef_result = run_tool(
+                        verifier_tool,
                         prompt=ef_prompt,
                         working_dir=project_dir,
                         system_prompt=EDGE_FUNCTION_DEPLOY_SYSTEM_PROMPT,
@@ -1848,7 +1858,7 @@ def run_orchestration(
                     redacted_ef_prompt = redact_credentials(
                         ef_prompt, credentials_to_redact
                     )
-                    log_step(store, run_id, step_num, "edge_function_deploy", "claude_code",
+                    log_step(store, run_id, step_num, "edge_function_deploy", verifier_tool,
                              redacted_ef_prompt, ef_result, build_phase=step.get("build_phase"))
 
                     ef = parse_edge_function_result(ef_result.text_result)
@@ -1922,14 +1932,15 @@ def run_orchestration(
                     f"Issues encountered: {verification['issues']}\n\n"
                     f"Return concise, actionable findings. Include code examples if relevant."
                 )
-                search_result = run_claude_code(
+                search_result = run_tool(
+                    verifier_tool,
                     prompt=search_prompt,
                     working_dir=project_dir,
                     system_prompt="You are a research assistant. Search the web and return "
                     "concise, actionable technical findings. Focus on code examples and correct API usage.",
                 )
 
-                log_step(store, run_id, step_num, "research", "claude_code",
+                log_step(store, run_id, step_num, "research", verifier_tool,
                         search_prompt, search_result, build_phase=step.get("build_phase"))
 
                 findings = search_result.text_result[:2000] if search_result.text_result else "No results found."
@@ -1960,7 +1971,8 @@ def run_orchestration(
                         f"  {command}\n\n"
                         f"Do not modify any files. Only run the command and report what it outputs."
                     )
-                    diag_result = run_claude_code(
+                    diag_result = run_tool(
+                        verifier_tool,
                         prompt=diag_prompt,
                         working_dir=project_dir,
                         system_prompt="You are a diagnostic assistant. Run the requested command "
@@ -1968,7 +1980,7 @@ def run_orchestration(
                         "files or fix any issues — only run the command and report the results.",
                     )
 
-                    log_step(store, run_id, step_num, "diagnostic", "claude_code",
+                    log_step(store, run_id, step_num, "diagnostic", verifier_tool,
                              diag_prompt, diag_result, build_phase=step.get("build_phase"))
 
                     diag_output = diag_result.text_result[:2000] if diag_result.text_result else "No output."
@@ -2009,7 +2021,7 @@ def run_orchestration(
     if not skip_smoke_test:
         # ── Phase 3: Smoke Test ───────────────────────
         print(f"\n{'=' * 60}")
-        print("  PHASE 3: SMOKE TEST (Claude Code)")
+        print(f"  PHASE 3: SMOKE TEST ({verifier_tool})")
         print(f"{'=' * 60}")
 
         # Build credentials section for smoke test
@@ -2034,7 +2046,8 @@ If the app has authentication:
             auth_instructions=auth_instructions,
         )
 
-        smoke_result = run_claude_code(
+        smoke_result = run_tool(
+            verifier_tool,
             prompt=smoke_prompt,
             working_dir=project_dir,
             system_prompt=SMOKE_TEST_SYSTEM_PROMPT,
@@ -2042,7 +2055,7 @@ If the app has authentication:
 
         # Log with redacted credentials
         redacted_smoke_prompt = redact_credentials(smoke_prompt, credentials_to_redact)
-        log_step(store, run_id, len(steps) + 1, "smoke_test", "claude_code",
+        log_step(store, run_id, len(steps) + 1, "smoke_test", verifier_tool,
                  redacted_smoke_prompt, smoke_result)
 
         smoke = parse_smoke_test(smoke_result.text_result)
@@ -2080,20 +2093,21 @@ If the app has authentication:
 
     # ── Phase 4: Approach Analysis ───────────────────────
     print(f"\n{'=' * 60}")
-    print("  PHASE 4: APPROACH ANALYSIS (Claude Code)")
+    print(f"  PHASE 4: APPROACH ANALYSIS ({verifier_tool})")
     print(f"{'=' * 60}")
 
     approach_prompt = APPROACH_ANALYSIS_PROMPT_TEMPLATE.format(
         user_prompt=user_prompt,
     )
 
-    approach_result = run_claude_code(
+    approach_result = run_tool(
+        verifier_tool,
         prompt=approach_prompt,
         working_dir=project_dir,
         system_prompt=APPROACH_ANALYSIS_SYSTEM_PROMPT,
     )
 
-    log_step(store, run_id, len(steps) + 2, "approach_analysis", "claude_code",
+    log_step(store, run_id, len(steps) + 2, "approach_analysis", verifier_tool,
              approach_prompt, approach_result)
 
     approach = parse_approach_analysis(approach_result.text_result)
@@ -2207,6 +2221,8 @@ def main():
                         help="Tool for planning (default: claude)")
     parser.add_argument("--implementer", choices=["claude", "cursor"], default="cursor",
                         help="Tool for implementation (default: cursor)")
+    parser.add_argument("--verifier", choices=["claude", "cursor"], default="claude",
+                        help="Tool for verification, testing, and analysis (default: claude)")
     parser.add_argument("--supabase-url", default=None,
                         help="Target Supabase project URL (REST API) for runtime testing")
     parser.add_argument("--supabase-anon-key", default=None,
@@ -2260,6 +2276,7 @@ def main():
         skip_smoke_test=args.skip_smoke_test,
         planner_tool=args.planner,
         implementer_tool=args.implementer,
+        verifier_tool=args.verifier,
         target_supabase_url=args.supabase_url,
         target_supabase_anon_key=args.supabase_anon_key,
         target_supabase_service_key=args.supabase_service_key,

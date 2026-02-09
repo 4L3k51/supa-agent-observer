@@ -135,34 +135,38 @@ python orchestrator.py \
 
 ### Tool Selection
 
-The orchestrator supports **any combination** of Claude Code and Cursor Agent for planning and implementation. The verifier is always Claude Code.
+The orchestrator supports **any combination** of Claude Code and Cursor Agent for all three roles: planning, implementation, and verification.
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--planner` | `claude` | Tool for planning (`claude` or `cursor`) |
 | `--implementer` | `cursor` | Tool for implementation (`claude` or `cursor`) |
+| `--verifier` | `claude` | Tool for verification, testing, and analysis (`claude` or `cursor`) |
 
-**All 4 configurations:**
+**Example configurations:**
 
 | Configuration | Command | Use Case |
 |---------------|---------|----------|
-| Claude plans, Cursor implements | `--planner claude --implementer cursor` (default) | Compare both agents on their strengths |
-| Claude only | `--planner claude --implementer claude` | Baseline without Cursor |
-| Cursor only | `--planner cursor --implementer cursor` | Baseline without Claude |
-| Cursor plans, Claude implements | `--planner cursor --implementer claude` | Test reversed roles |
+| Claude plans, Cursor implements, Claude verifies | (default) | Compare both agents on their strengths |
+| All Claude | `--planner claude --implementer claude --verifier claude` | Baseline without Cursor |
+| All Cursor | `--planner cursor --implementer cursor --verifier cursor` | Baseline without Claude |
+| Cursor only with GPT-5.2 | `--planner cursor --implementer cursor --verifier cursor --cursor-model gpt-5.2` | Test GPT-5.2 end-to-end |
 
 ```bash
-# Default: Claude plans, Cursor implements
+# Default: Claude plans, Cursor implements, Claude verifies
 python orchestrator.py "Build X"
 
 # All Claude (no Cursor)
-python orchestrator.py --planner claude --implementer claude "Build X"
+python orchestrator.py --planner claude --implementer claude --verifier claude "Build X"
 
-# All Cursor (no Claude Code for planning/implementing)
-python orchestrator.py --planner cursor --implementer cursor "Build X"
+# All Cursor (no Claude Code at all)
+python orchestrator.py --planner cursor --implementer cursor --verifier cursor "Build X"
 
-# Cursor plans, Claude implements
-python orchestrator.py --planner cursor --implementer claude "Build X"
+# Cursor with GPT-5.2 for everything
+python orchestrator.py --planner cursor --implementer cursor --verifier cursor --cursor-model gpt-5.2 "Build X"
+
+# Claude plans, Cursor implements with GPT-5.2, Claude verifies
+python orchestrator.py --implementer cursor --cursor-model gpt-5.2 "Build X"
 ```
 
 This flexibility lets you run the same prompt with different configurations to compare agent performance.
