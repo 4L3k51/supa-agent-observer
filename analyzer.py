@@ -99,8 +99,7 @@ def analyze_run(store: SupabaseStorage, run_id: str):
 
             stderr = s.get("raw_stderr", "")
             if stderr and len(stderr.strip()) > 0:
-                stderr_preview = stderr.strip()[:200]
-                print(f"       stderr: {stderr_preview}")
+                print(f"       stderr: {stderr.strip()}")
 
     print(f"\n  Total duration: {total_duration:.1f}s ({total_duration / 60:.1f}min)")
 
@@ -154,10 +153,10 @@ def analyze_run(store: SupabaseStorage, run_id: str):
     if errors:
         print(f"\nERRORS DETECTED: {len(errors)}")
         print("=" * 70)
-        for i, err in enumerate(errors[:20]):
+        for i, err in enumerate(errors):
             print(f"\n  Error {i + 1} (step_id: {err['step_id']}):")
-            preview = json.dumps(err["data"], indent=2)[:300]
-            for line in preview.split("\n"):
+            formatted = json.dumps(err["data"], indent=2)
+            for line in formatted.split("\n"):
                 print(f"    {line}")
 
     print()
@@ -188,7 +187,7 @@ def show_errors(store: SupabaseStorage, run_id: str):
         stderr = s.get("raw_stderr", "")
         if stderr:
             print(f"  stderr:")
-            for line in stderr.strip().split("\n")[:10]:
+            for line in stderr.strip().split("\n"):
                 print(f"    {line}")
 
         parsed = s.get("parsed_result", "") or ""
@@ -248,7 +247,7 @@ def show_tools(store: SupabaseStorage, run_id: str):
                    or tc.get("terminalToolCall", {}).get("args", {}).get("command", ""))
             commands.append(cmd)
         else:
-            other.append(name or str(tc)[:60])
+            other.append(name or str(tc))
 
     print(f"\n  Files written ({len(file_writes)}):")
     for f in file_writes:
@@ -258,7 +257,7 @@ def show_tools(store: SupabaseStorage, run_id: str):
         print(f"    👁  {f}")
     print(f"\n  Commands run ({len(commands)}):")
     for c in commands:
-        print(f"    💻 {c[:80]}")
+        print(f"    💻 {c}")
     if other:
         print(f"\n  Other tools ({len(other)}):")
         for o in other:
@@ -324,7 +323,7 @@ def deep_dive_step(store: SupabaseStorage, run_id: str, step_number: int):
         if stderr:
             print(f"\n  STDERR:")
             print(f"  {'─' * 60}")
-            for line in stderr.split("\n")[:20]:
+            for line in stderr.split("\n"):
                 print(f"    {line}")
 
         events = store.get_step_events(s["id"])
@@ -338,12 +337,10 @@ def deep_dive_step(store: SupabaseStorage, run_id: str, step_number: int):
                 etype = data.get("type", "?")
                 subtype = data.get("subtype", "")
                 compact = json.dumps(data, separators=(",", ":"))
-                if len(compact) > 120:
-                    compact = compact[:120] + "..."
                 print(f"    [{etype}:{subtype}] {compact}")
             except (json.JSONDecodeError, TypeError):
                 raw = e.get("event_data", "")
-                print(f"    [raw] {str(raw)[:120]}")
+                print(f"    [raw] {str(raw)}")
 
 
 def export_report(store: SupabaseStorage, run_id: str, output_path: str):
@@ -411,7 +408,7 @@ def compare_runs(store: SupabaseStorage, run_id1: str, run_id2: str):
         )
 
         print(f"\n  Run: {rid}")
-        print(f"    Prompt: {run.get('user_prompt', '?')[:60]}")
+        print(f"    Prompt: {run.get('user_prompt', '?')}")
         print(f"    Status: {run.get('status', '?')}")
         print(f"    Total duration: {total_duration:.1f}s")
         print(f"    Steps: {len(steps)} ({error_count} errors)")
@@ -635,7 +632,7 @@ def generate_full_report(store, run_id: str) -> dict:
                     "build_phase": build_phase,
                     "phase": s["phase"],
                     "category": category,
-                    "error": error_text[:500] if error_text else f"Exit code: {s.get('exit_code')}",
+                    "error": error_text if error_text else f"Exit code: {s.get('exit_code')}",
                     "exit_code": s.get("exit_code"),
                 })
 
@@ -712,7 +709,7 @@ def generate_full_report(store, run_id: str) -> dict:
 
         "failures": {
             "by_category": dict(failures_by_category),
-            "details": all_failures[:50],  # Limit to first 50
+            "details": all_failures,
         },
 
         "web_searches": web_searches,
@@ -790,7 +787,7 @@ def generate_analysis_markdown(full_report: dict) -> str:
         f"| Success Rate | {s['success_rate'] * 100:.0f}% |",
         f"| Total Retries | {s['total_retries']} |",
         f"",
-        f"**Prompt:** {s['prompt'][:200]}{'...' if len(s['prompt'] or '') > 200 else ''}",
+        f"**Prompt:** {s['prompt']}",
         f"",
     ]
 
@@ -842,8 +839,8 @@ def generate_analysis_markdown(full_report: dict) -> str:
             f"| Step | Query |",
             f"|------|-------|",
         ])
-        for search in searches[:20]:
-            query = search.get("query", "")[:60]
+        for search in searches:
+            query = search.get("query", "")
             lines.append(f"| {search.get('step_id', '-')} | {query} |")
         lines.append("")
 
@@ -858,20 +855,20 @@ def generate_analysis_markdown(full_report: dict) -> str:
             lines.append(f"- **{phase}**: {count} retries")
         lines.append("")
 
-    # Failure details (top 10)
-    details = r["failures"]["details"][:10]
+    # Failure details
+    details = r["failures"]["details"]
     if details:
         lines.extend([
-            f"## Top Failure Details",
+            f"## Failure Details",
             f"",
         ])
         for i, f in enumerate(details, 1):
-            error_preview = (f.get("error", "") or "")[:150]
+            error_text = f.get("error", "") or ""
             lines.extend([
                 f"### {i}. Step {f['step']} ({f['build_phase'] or 'unknown'} / {f['phase']})",
                 f"",
                 f"- **Category:** {f['category']}",
-                f"- **Error:** `{error_preview}`",
+                f"- **Error:** `{error_text}`",
                 f"",
             ])
 

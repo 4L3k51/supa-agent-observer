@@ -350,7 +350,7 @@ def _process_stream_line(line: str, result: CLIResult):
 
         elif event_type == "error":
             error_msg = event.get("error", {}).get("message", str(event))
-            print(f"  ❌ Error: {error_msg[:100]}")
+            print(f"  ❌ Error: {error_msg}")
 
     except json.JSONDecodeError:
         # Not JSON - just raw text output, store it
@@ -358,7 +358,7 @@ def _process_stream_line(line: str, result: CLIResult):
             result.text_result += line + "\n"
             # Show abbreviated content
             if len(line) > 100:
-                print(f"  📄 {line[:100]}...")
+                print(f"  📄 {line}")
             else:
                 print(f"  📄 {line}")
 
@@ -931,7 +931,7 @@ def extract_normalized_errors(
     for err_msg in parsed_errors:
         errors.append({
             "type": "PARSED_ERROR",
-            "message": err_msg[:500],  # Truncate long messages
+            "message": err_msg,
             "source": "parsed",
             "phase": phase,
             "tool": tool,
@@ -943,14 +943,14 @@ def extract_normalized_errors(
         stderr_tail = None
         if stderr and stderr.strip():
             lines = stderr.strip().split("\n")
-            stderr_tail = "\n".join(lines[-10:])[:1000]  # Last 10 lines, max 1000 chars
+            stderr_tail = "\n".join(lines[-10:])
 
         # Include commands that were executed (helps debug which one failed)
         commands_run = None
         if commands_executed:
             # Get last 5 commands, just the command strings
             recent_cmds = commands_executed[-5:]
-            commands_run = [cmd.get("command", str(cmd))[:200] for cmd in recent_cmds]
+            commands_run = [cmd.get("command", str(cmd)) for cmd in recent_cmds]
 
         error = {
             "type": "EXIT_ERROR",
@@ -1179,7 +1179,7 @@ def parse_approach_analysis(analysis_text: str) -> dict:
             if key != "parse_error" and key in parsed:
                 result[key] = parsed[key]
     except json.JSONDecodeError as e:
-        result["parse_error"] = f"Failed to parse JSON: {str(e)[:100]}"
+        result["parse_error"] = f"Failed to parse JSON: {str(e)}"
 
     return result
 
@@ -1545,7 +1545,7 @@ def run_orchestration(
 
     if plan_result.exit_code != 0 and not plan_result.text_result:
         print(f"\n❌ Planning failed! Exit code: {plan_result.exit_code}")
-        print(f"   stderr: {plan_result.stderr[:500]}")
+        print(f"   stderr: {plan_result.stderr}")
         store.update_run_status(run_id, "failed_planning")
         return
 
@@ -1553,7 +1553,7 @@ def run_orchestration(
 
     if not steps:
         print("\n❌ Could not parse any steps from the plan.")
-        print(f"   Raw output:\n{plan_result.text_result[:1000]}")
+        print(f"   Raw output:\n{plan_result.text_result}")
         store.update_run_status(run_id, "failed_planning")
         return
 
@@ -1577,7 +1577,7 @@ def run_orchestration(
             if link_result.returncode == 0:
                 print(f"  ✓ Supabase project linked")
             else:
-                print(f"  ⚠️  Supabase link failed: {link_result.stderr[:200]}")
+                print(f"  ⚠️  Supabase link failed: {link_result.stderr}")
                 print(f"     Edge Function deployment will be skipped")
                 supabase_cli_available = False
         else:
@@ -1658,7 +1658,7 @@ def run_orchestration(
                 total_steps=len(steps),
                 step_title=step["title"],
                 step_instructions=step["instructions"],
-                implementer_output=impl_result.text_result[:3000],
+                implementer_output=impl_result.text_result,
             )
 
             verify_result = run_tool(
@@ -1944,7 +1944,7 @@ def run_orchestration(
                 log_step(store, run_id, step_num, "research", verifier_tool,
                         search_prompt, search_result, build_phase=step.get("build_phase"))
 
-                findings = search_result.text_result[:2000] if search_result.text_result else "No results found."
+                findings = search_result.text_result if search_result.text_result else "No results found."
                 step["instructions"] += (
                     f"\n\nPREVIOUS ATTEMPT ISSUES (fix these):\n"
                     + "\n".join(f"- {i}" for i in verification["issues"])
@@ -1984,7 +1984,7 @@ def run_orchestration(
                     log_step(store, run_id, step_num, "diagnostic", verifier_tool,
                              diag_prompt, diag_result, build_phase=step.get("build_phase"))
 
-                    diag_output = diag_result.text_result[:2000] if diag_result.text_result else "No output."
+                    diag_output = diag_result.text_result if diag_result.text_result else "No output."
                     step["instructions"] += (
                         f"\n\nPREVIOUS ATTEMPT ISSUES (fix these):\n"
                         + "\n".join(f"- {i}" for i in verification["issues"])
