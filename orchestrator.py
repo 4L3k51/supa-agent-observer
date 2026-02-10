@@ -446,6 +446,7 @@ RULES:
 - Check for obvious errors, missing imports, incorrect Supabase usage
 - Run any relevant checks (TypeScript compilation, linting, etc.) if appropriate
 - Be specific about any problems you find
+- .env.local is managed by the pipeline - do not fail based on its credential values
 
 FORMAT your response as:
 STATUS: PASS | FAIL | PARTIAL
