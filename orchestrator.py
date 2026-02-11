@@ -774,6 +774,80 @@ Examine the project files and document:
 Output ONLY the JSON object as specified. No commentary before or after.
 """
 
+REPLANNER_SYSTEM_PROMPT = """\
+You are the REPLANNER in an automated coding pipeline. After each step completes,
+you evaluate whether the remaining plan is still valid or needs adjustment.
+
+You receive:
+- The original project goal
+- What was actually built in the just-completed step
+- Any caveats, warnings, or divergences noted by the verifier
+- Any runtime test results (migrations, RLS, Edge Functions)
+- The remaining planned steps
+
+YOUR JOB:
+1. Compare what was actually built against what the plan expected
+2. Check if the remaining steps still make sense given what exists
+3. Decide whether to PROCEED with the existing plan or REPLAN
+
+DECISION CRITERIA:
+- PROCEED: The remaining steps are still valid. Minor caveats don't require replanning
+  if the steps can handle them as-is.
+- REPLAN: The implementation diverged significantly, dependencies changed, or the
+  remaining steps would fail or duplicate work given what was actually built.
+
+RULES FOR REPLANNING:
+- Completed steps are LOCKED - you cannot change them
+- Only output new versions of the REMAINING steps (from step N+1 onward)
+- Renumber steps to continue from where we left off
+- Preserve the original project goal - don't change scope
+- Be specific about file names, function names, and expected behavior
+- Tag each step with a build phase: setup, schema, backend, frontend, testing, or deployment
+- If the remaining steps need no changes, use PROCEED
+
+FORMAT your response as:
+DECISION: PROCEED | REPLAN
+
+REASON: [1-2 sentences explaining why the remaining steps are valid or need updating]
+
+[Only if DECISION is REPLAN, include the new remaining steps:]
+STEP {next_step_number}: [title]
+PHASE: [one of: setup, schema, backend, frontend, testing, deployment]
+[detailed instruction for the implementer, 2-5 sentences]
+
+STEP {next_step_number + 1}: [title]
+...
+
+TOTAL_REMAINING_STEPS: [number]
+"""
+
+REPLANNER_PROMPT_TEMPLATE = """\
+Evaluate whether the remaining plan needs adjustment after step {step_number} completed.
+
+PROJECT GOAL: {user_prompt}
+
+== COMPLETED STEP ==
+STEP {step_number}: {step_title}
+PLANNED INSTRUCTIONS:
+{step_instructions}
+
+WHAT WAS ACTUALLY BUILT:
+{implementer_output}
+
+== VERIFICATION RESULT ==
+STATUS: {verification_status}
+{verification_issues}
+SUMMARY: {verification_summary}
+
+{runtime_results}
+
+== REMAINING PLANNED STEPS ==
+{remaining_steps}
+
+Evaluate: Are the remaining steps still valid given what was actually built and any noted issues?
+If replanning, the next step number should be {next_step_number}.
+"""
+
 
 # ─────────────────────────────────────────────
 # Plan Parser
@@ -1055,6 +1129,137 @@ def parse_verification(verify_text: str) -> dict:
             result["issues"].append(stripped[2:])
 
     return result
+
+
+def parse_replan(replan_text: str, next_step_number: int) -> dict:
+    """Parse the replanner's output into structured result.
+
+    Returns:
+        {
+            "decision": "PROCEED" | "REPLAN",
+            "reason": str,
+            "new_steps": list[dict] | None  # Only if decision is REPLAN
+        }
+    """
+    result = {
+        "decision": "PROCEED",
+        "reason": "",
+        "new_steps": None,
+    }
+
+    lines = replan_text.split("\n")
+
+    for i, line in enumerate(lines):
+        stripped = strip_markdown(line.strip())
+        upper = stripped.upper()
+
+        if upper.startswith("DECISION:"):
+            decision = stripped.split(":", 1)[1].strip().upper()
+            if "REPLAN" in decision:
+                result["decision"] = "REPLAN"
+            else:
+                result["decision"] = "PROCEED"
+
+        elif upper.startswith("REASON:"):
+            result["reason"] = stripped.split(":", 1)[1].strip()
+
+    # If decision is REPLAN, parse the new steps
+    if result["decision"] == "REPLAN":
+        # Extract everything after REASON line to parse as a plan
+        reason_found = False
+        plan_lines = []
+        for line in lines:
+            stripped = strip_markdown(line.strip())
+            if stripped.upper().startswith("REASON:"):
+                reason_found = True
+                continue
+            if reason_found:
+                plan_lines.append(line)
+
+        plan_text = "\n".join(plan_lines)
+        new_steps = parse_plan(plan_text)
+
+        # Renumber steps to start from next_step_number if they aren't already
+        if new_steps:
+            # Check if steps are already correctly numbered
+            first_step_num = new_steps[0].get("number", 1)
+            if first_step_num != next_step_number:
+                # Renumber all steps
+                for idx, step in enumerate(new_steps):
+                    step["number"] = next_step_number + idx
+            result["new_steps"] = new_steps
+
+    return result
+
+
+def needs_replan_checkpoint(
+    verification: dict,
+    migration_result: dict = None,
+    rls_result: dict = None,
+    ef_result: dict = None,
+) -> tuple[bool, str]:
+    """Determine if a re-plan checkpoint is needed after step completion.
+
+    We trigger liberally and let the replanner decide what's significant.
+    The replanner defaults to PROCEED for minor issues.
+
+    Returns:
+        (should_replan, reason_summary)
+    """
+    reasons = []
+
+    # Explicit request from verifier
+    if verification["recommendation"] == "MODIFY_PLAN":
+        return True, "Verifier explicitly recommended plan modification"
+
+    # Verification passed but with caveats - let replanner judge significance
+    if verification["recommendation"] == "PROCEED":
+        if verification["status"] == "PARTIAL":
+            reasons.append(f"partial verification ({verification['summary']})")
+
+        if verification["issues"]:
+            reasons.append(f"{len(verification['issues'])} noted issues")
+
+    # Runtime test results with any warnings
+    if migration_result:
+        if migration_result.get("status") == "SUCCESS" and migration_result.get("errors"):
+            reasons.append("migration had warnings")
+
+    if rls_result:
+        if rls_result.get("status") == "SUCCESS":
+            if rls_result.get("rls_enforced") == "PARTIAL":
+                reasons.append("RLS partially enforced")
+            if rls_result.get("triggers_work") == "NO":
+                reasons.append("triggers not working")
+
+    if ef_result:
+        if ef_result.get("status") == "SUCCESS":
+            tested = ef_result.get("functions_tested", 0)
+            deployed = ef_result.get("functions_deployed", 0)
+            if tested < deployed:
+                reasons.append(f"only {tested}/{deployed} edge functions tested")
+
+    if reasons:
+        return True, "; ".join(reasons)
+
+    return False, ""
+
+
+def format_remaining_steps(steps: list[dict], start_idx: int) -> str:
+    """Format remaining steps for the replanner prompt."""
+    if start_idx >= len(steps):
+        return "No remaining steps."
+
+    remaining = steps[start_idx:]
+    lines = []
+    for step in remaining:
+        phase = step.get("build_phase", "unknown")
+        lines.append(f"STEP {step['number']}: {step['title']}")
+        lines.append(f"PHASE: {phase}")
+        lines.append(step.get("instructions", ""))
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def parse_smoke_test(smoke_text: str) -> dict:
@@ -1600,10 +1805,21 @@ def run_orchestration(
         "logging_supabase_key": os.environ.get("SUPABASE_KEY"),  # Logging credentials
     }
 
-    for idx, step in enumerate(steps[start:], start=start):
+    idx = start
+    while idx < len(steps):
+        step = steps[idx]
         step_num = step["number"]
         retry_count = 0
         resolution_count = 0
+
+        # Track runtime test results for replan checkpoint
+        step_runtime_results = {
+            "migration": None,
+            "rls": None,
+            "ef": None,
+        }
+        step_verification = None
+        step_impl_output = ""
 
         print(f"\n{'=' * 60}")
         print(f"  STEP {step_num}/{len(steps)}: {step['title']}")
@@ -1673,6 +1889,10 @@ def run_orchestration(
 
             verification = parse_verification(verify_result.text_result)
 
+            # Store for replan checkpoint
+            step_verification = verification
+            step_impl_output = impl_result.text_result
+
             # ── 2c: Act on verification ────────────
             status_emoji = {
                 "PASS": "✅", "FAIL": "❌", "PARTIAL": "⚠️"
@@ -1728,6 +1948,7 @@ def run_orchestration(
                                  redacted_migration_prompt, migration_result, build_phase="schema")
 
                         migration = parse_migration_result(migration_result.text_result)
+                        step_runtime_results["migration"] = migration
 
                         mig_emoji = "✅" if migration["status"] == "SUCCESS" else "❌"
                         print(f"\n  {mig_emoji} Migration: {migration['status']}")
@@ -1782,6 +2003,7 @@ def run_orchestration(
                                      redacted_rls_prompt, rls_result, build_phase="schema")
 
                             rls = parse_rls_test_result(rls_result.text_result)
+                            step_runtime_results["rls"] = rls
 
                             rls_emoji = {"YES": "✅", "NO": "❌", "PARTIAL": "⚠️", "UNKNOWN": "❓"}.get(
                                 rls["rls_enforced"], "❓"
@@ -1863,6 +2085,7 @@ def run_orchestration(
                              redacted_ef_prompt, ef_result, build_phase=step.get("build_phase"))
 
                     ef = parse_edge_function_result(ef_result.text_result)
+                    step_runtime_results["ef"] = ef
 
                     ef_emoji = "✅" if ef["status"] == "SUCCESS" else "❌"
                     print(f"\n  {ef_emoji} Edge Functions: {ef['status']}")
@@ -1915,9 +2138,10 @@ def run_orchestration(
                     break
 
             elif verification["recommendation"] == "MODIFY_PLAN":
-                print(f"\n  📝 Plan modification requested. Continuing with best effort.")
+                # Mark step as complete but let the replan checkpoint handle plan changes
+                print(f"\n  📝 Plan modification requested - will evaluate at replan checkpoint.")
                 completed_descriptions.append(
-                    f"Step {step_num} ({step['title']}): Needs attention"
+                    f"Step {step_num} ({step['title']}): Completed (modification requested)"
                 )
                 break
 
@@ -2018,6 +2242,82 @@ def run_orchestration(
                     f"Step {step_num} ({step['title']}): Completed (unverified)"
                 )
                 break
+
+        # ── 2d: Replan checkpoint ────────────
+        # After step completes, check if remaining plan needs adjustment
+        if step_verification and idx < len(steps) - 1:
+            should_replan, replan_reason = needs_replan_checkpoint(
+                step_verification,
+                migration_result=step_runtime_results.get("migration"),
+                rls_result=step_runtime_results.get("rls"),
+                ef_result=step_runtime_results.get("ef"),
+            )
+
+            if should_replan:
+                print(f"\n  ▶ Replan checkpoint triggered: {replan_reason}")
+                print(f"  {'─' * 50}")
+
+                # Format runtime results section for the replanner
+                runtime_section = ""
+                if step_runtime_results.get("migration"):
+                    mig = step_runtime_results["migration"]
+                    runtime_section += f"\nMIGRATION: {mig['status']}"
+                    if mig.get("errors"):
+                        runtime_section += f" (warnings: {', '.join(mig['errors'][:3])})"
+                if step_runtime_results.get("rls"):
+                    rls = step_runtime_results["rls"]
+                    runtime_section += f"\nRLS: enforced={rls['rls_enforced']}, grants={rls['grants_valid']}"
+                    if rls.get("errors"):
+                        runtime_section += f" (issues: {', '.join(rls['errors'][:3])})"
+                if step_runtime_results.get("ef"):
+                    ef = step_runtime_results["ef"]
+                    runtime_section += f"\nEDGE FUNCTIONS: {ef['status']} ({ef['functions_deployed']} deployed, {ef['functions_tested']} tested)"
+
+                # Format verification issues
+                issues_section = ""
+                if step_verification.get("issues"):
+                    issues_section = "ISSUES:\n" + "\n".join(f"- {i}" for i in step_verification["issues"])
+
+                replan_prompt = REPLANNER_PROMPT_TEMPLATE.format(
+                    step_number=step_num,
+                    user_prompt=user_prompt,
+                    step_title=step["title"],
+                    step_instructions=step["instructions"],
+                    implementer_output=step_impl_output[:2000] if step_impl_output else "(no output)",
+                    verification_status=step_verification["status"],
+                    verification_issues=issues_section,
+                    verification_summary=step_verification.get("summary", ""),
+                    runtime_results=f"== RUNTIME TEST RESULTS =={runtime_section}" if runtime_section else "",
+                    remaining_steps=format_remaining_steps(steps, idx + 1),
+                    next_step_number=step_num + 1,
+                )
+
+                replan_result = run_tool(
+                    planner_tool,
+                    prompt=replan_prompt,
+                    working_dir=project_dir,
+                    system_prompt=REPLANNER_SYSTEM_PROMPT,
+                )
+
+                log_step(store, run_id, step_num, "replan_checkpoint", planner_tool,
+                         replan_prompt, replan_result, build_phase=step.get("build_phase"))
+
+                replan = parse_replan(replan_result.text_result, step_num + 1)
+
+                if replan["decision"] == "REPLAN" and replan["new_steps"]:
+                    print(f"\n  🔄 Replanning: {replan['reason']}")
+                    print(f"     Replacing {len(steps) - idx - 1} remaining steps with {len(replan['new_steps'])} new steps:")
+                    for new_step in replan["new_steps"]:
+                        print(f"       Step {new_step['number']}: {new_step['title']}")
+
+                    # Replace remaining steps with new ones
+                    # Keep completed steps (0..idx), replace the rest
+                    steps = steps[:idx + 1] + replan["new_steps"]
+                else:
+                    print(f"\n  ✓ Replan: PROCEED - {replan['reason']}")
+
+        # Move to next step
+        idx += 1
 
     if not skip_smoke_test:
         # ── Phase 3: Smoke Test ───────────────────────
