@@ -1262,6 +1262,41 @@ def format_remaining_steps(steps: list[dict], start_idx: int) -> str:
     return "\n".join(lines)
 
 
+def format_step_completion(step_num: int, title: str, status: str, learnings: list[str], max_learnings: int = 3) -> str:
+    """Format a completed step description with key learnings.
+
+    Args:
+        step_num: Step number
+        title: Step title
+        status: Completion status (e.g., "Completed", "SKIPPED")
+        learnings: List of learnings/issues encountered
+        max_learnings: Maximum number of learnings to include (to keep context manageable)
+
+    Returns:
+        Formatted string like "Step 2 (Create schema): Completed. Note: used IF NOT EXISTS for idempotency; added GRANT for authenticated role."
+    """
+    base = f"Step {step_num} ({title}): {status}"
+
+    if not learnings:
+        return base
+
+    # Dedupe and limit learnings
+    unique_learnings = []
+    seen = set()
+    for learning in learnings:
+        # Normalize for deduplication
+        normalized = learning.lower().strip()
+        if normalized not in seen and len(unique_learnings) < max_learnings:
+            seen.add(normalized)
+            unique_learnings.append(learning)
+
+    if unique_learnings:
+        notes = "; ".join(unique_learnings)
+        return f"{base}. Note: {notes}"
+
+    return base
+
+
 def parse_smoke_test(smoke_text: str) -> dict:
     """Parse the smoke tester's output into structured result."""
     result = {
@@ -1821,6 +1856,9 @@ def run_orchestration(
         step_verification = None
         step_impl_output = ""
 
+        # Track learnings to pass to future steps
+        step_learnings = []
+
         print(f"\n{'=' * 60}")
         print(f"  STEP {step_num}/{len(steps)}: {step['title']}")
         print(f"{'=' * 60}")
@@ -1892,6 +1930,12 @@ def run_orchestration(
             # Store for replan checkpoint
             step_verification = verification
             step_impl_output = impl_result.text_result
+
+            # Capture learnings from verification issues
+            if verification["issues"]:
+                for issue in verification["issues"]:
+                    if issue not in step_learnings:
+                        step_learnings.append(issue)
 
             # ── 2c: Act on verification ────────────
             status_emoji = {
@@ -1970,8 +2014,9 @@ def run_orchestration(
                                 continue  # Re-enter loop, retry implementation
                             else:
                                 print(f"\n  ❌ Max resolutions reached. Continuing with migration errors.")
+                                step_learnings.append("migration had errors but continued")
                                 completed_descriptions.append(
-                                    f"Step {step_num} ({step['title']}): Completed with migration errors"
+                                    format_step_completion(step_num, step['title'], "Completed with migration errors", step_learnings)
                                 )
                                 break
 
@@ -2046,8 +2091,9 @@ def run_orchestration(
                                     continue  # Re-enter loop, retry implementation
                                 else:
                                     print(f"\n  ❌ Max resolutions reached. Continuing with RLS/GRANT issues.")
+                                    step_learnings.append("RLS/GRANT issues remained")
                                     completed_descriptions.append(
-                                        f"Step {step_num} ({step['title']}): Completed with RLS/GRANT issues"
+                                        format_step_completion(step_num, step['title'], "Completed with RLS/GRANT issues", step_learnings)
                                     )
                                     break
 
@@ -2107,14 +2153,18 @@ def run_orchestration(
                             continue
                         else:
                             print(f"\n  ❌ Max resolutions reached. Continuing with Edge Function issues.")
+                            step_learnings.append("Edge Function deployment had issues")
                             completed_descriptions.append(
-                                f"Step {step_num} ({step['title']}): Completed with Edge Function issues"
+                                format_step_completion(step_num, step['title'], "Completed with Edge Function issues", step_learnings)
                             )
                             break
 
                 # Step fully passed (including runtime if applicable)
+                # Add verifier summary if it contains useful info
+                if verification.get("summary") and retry_count > 0:
+                    step_learnings.append(verification["summary"])
                 completed_descriptions.append(
-                    f"Step {step_num} ({step['title']}): Completed"
+                    format_step_completion(step_num, step['title'], "Completed", step_learnings)
                 )
                 break
 
@@ -2133,7 +2183,7 @@ def run_orchestration(
                     else:
                         print(f"\n  ❌ Max resolutions reached for step {step_num}. Continuing anyway.")
                     completed_descriptions.append(
-                        f"Step {step_num} ({step['title']}): Completed with issues ({retry_count} retries, {resolution_count} resolutions)"
+                        format_step_completion(step_num, step['title'], f"Completed with issues ({retry_count} retries)", step_learnings)
                     )
                     break
 
@@ -2141,7 +2191,7 @@ def run_orchestration(
                 # Mark step as complete but let the replan checkpoint handle plan changes
                 print(f"\n  📝 Plan modification requested - will evaluate at replan checkpoint.")
                 completed_descriptions.append(
-                    f"Step {step_num} ({step['title']}): Completed (modification requested)"
+                    format_step_completion(step_num, step['title'], "Completed (modification requested)", step_learnings)
                 )
                 break
 
@@ -2169,6 +2219,10 @@ def run_orchestration(
                         search_prompt, search_result, build_phase=step.get("build_phase"))
 
                 findings = search_result.text_result if search_result.text_result else "No results found."
+
+                # Capture learning from web search
+                step_learnings.append(f"Searched '{query}' - found workaround")
+
                 step["instructions"] += (
                     f"\n\nPREVIOUS ATTEMPT ISSUES (fix these):\n"
                     + "\n".join(f"- {i}" for i in verification["issues"])
@@ -2178,7 +2232,7 @@ def run_orchestration(
                 if resolution_count >= MAX_RESOLUTIONS_PER_STEP:
                     print(f"\n  ❌ Max resolutions reached for step {step_num}. Continuing anyway.")
                     completed_descriptions.append(
-                        f"Step {step_num} ({step['title']}): Completed with issues ({retry_count} retries, {resolution_count} resolutions)"
+                        format_step_completion(step_num, step['title'], f"Completed with issues ({resolution_count} resolutions)", step_learnings)
                     )
                     break
 
@@ -2209,6 +2263,10 @@ def run_orchestration(
                              diag_prompt, diag_result, build_phase=step.get("build_phase"))
 
                     diag_output = diag_result.text_result if diag_result.text_result else "No output."
+
+                    # Capture learning from diagnostic
+                    step_learnings.append(f"Ran '{command}' to diagnose")
+
                     step["instructions"] += (
                         f"\n\nPREVIOUS ATTEMPT ISSUES (fix these):\n"
                         + "\n".join(f"- {i}" for i in verification["issues"])
@@ -2225,21 +2283,22 @@ def run_orchestration(
                 if resolution_count >= MAX_RESOLUTIONS_PER_STEP:
                     print(f"\n  ❌ Max resolutions reached for step {step_num}. Continuing anyway.")
                     completed_descriptions.append(
-                        f"Step {step_num} ({step['title']}): Completed with issues ({retry_count} retries, {resolution_count} resolutions)"
+                        format_step_completion(step_num, step['title'], f"Completed with issues ({resolution_count} resolutions)", step_learnings)
                     )
                     break
 
             elif verification["recommendation"] == "SKIP":
                 reason = verification.get("resolution", {}).get("reason", "Verifier recommended skipping")
                 print(f"\n  ⏭  Skipping step {step_num}: {reason}")
+                step_learnings.append(f"skipped: {reason}")
                 completed_descriptions.append(
-                    f"Step {step_num} ({step['title']}): SKIPPED - {reason}"
+                    format_step_completion(step_num, step['title'], "SKIPPED", step_learnings)
                 )
                 break
 
             else:
                 completed_descriptions.append(
-                    f"Step {step_num} ({step['title']}): Completed (unverified)"
+                    format_step_completion(step_num, step['title'], "Completed (unverified)", step_learnings)
                 )
                 break
 
