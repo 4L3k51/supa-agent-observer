@@ -1,6 +1,6 @@
 # Claude × Cursor Orchestrator
 
-Observation framework that coordinates **Claude Code** and **Cursor Agents** to build apps while logging every token, tool call, and web search to **Supabase**.
+Observation framework that coordinates **Claude Code** and **Cursor Agents** to build Supabase apps while logging every token, tool call, and web search.
 
 ## Purpose
 
