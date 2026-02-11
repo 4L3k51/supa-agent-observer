@@ -4,7 +4,7 @@ Observation framework that coordinates **Claude Code** and **Cursor Agents** to 
 
 ## Purpose
 
-This is a measurement tool. It answers the question:  **when agents are given a task to build an app with Supabase and zero hand-holding, where do the AI coding agents still get things wrong?**
+This is a measurement tool. It answers the question:  **when AI agents are given a task to build an app with Supabase and zero hand-holding, where do they still get things wrong?**
 
 By logging every step, tool call, verification verdict, and smoke test result, you get a structured dataset that shows:
 
