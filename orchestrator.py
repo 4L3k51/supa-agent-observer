@@ -375,7 +375,7 @@ RULES:
 - Output a numbered list of steps (typically 3-10 steps)
 - Each step must be concrete and self-contained enough for another AI to implement
 - Each step should build on the previous ones
-- Include setup steps (init project, install deps, configure supabase, etc.)
+- Include setup and configuration actions within each step (init project, install deps, configure supabase, update config.toml, set redirect URLs, etc.)
 - Think about the order: schema first, then backend logic, then frontend
 - Be specific about file names, function names, and expected behavior
 - Focus on Supabase specifics: schema/migrations, RLS policies, edge functions, auth setup
