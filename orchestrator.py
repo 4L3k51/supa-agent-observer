@@ -51,7 +51,7 @@ DEFAULT_PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 CLAUDE_CODE_TIMEOUT = 600   # 10 min for planning/verification
 CURSOR_TIMEOUT = 900        # 15 min for implementation (can be complex)
 CURSOR_IDLE_TIMEOUT = 120   # Kill cursor if no output for 2 min (hanging bug workaround)
-MAX_RESOLUTIONS_PER_STEP = 5  # total resolution actions (search, diagnostic, retry) before giving up
+MAX_RESOLUTIONS_PER_STEP = 7  # total resolution actions (search, diagnostic, retry) before giving up
 
 # CLI commands
 CLAUDE_CODE_CMD = "claude"
@@ -76,6 +76,7 @@ class CLIResult:
         self.text_result: str = ""         # extracted final text
         self.timed_out: bool = False
         self.killed_idle: bool = False
+        self.session_id: str = ""          # session ID for resuming conversations
 
 
 def run_claude_code(
@@ -126,16 +127,24 @@ def run_cursor_agent(
     return _run_cli(cmd, working_dir, timeout, idle_timeout=CURSOR_IDLE_TIMEOUT)
 
 
-def run_tool(tool: str, prompt: str, working_dir: str, system_prompt: Optional[str] = None, **kwargs) -> CLIResult:
-    """Dispatch to claude or cursor based on tool name."""
+def run_tool(tool: str, prompt: str, working_dir: str, system_prompt: Optional[str] = None,
+             session_id: Optional[str] = None, **kwargs) -> CLIResult:
+    """Dispatch to claude or cursor based on tool name.
+
+    Args:
+        session_id: For Claude only - resume a previous session for conversation continuity.
+                   Useful for retries within a step so the agent remembers what it tried.
+    """
     if tool == "claude":
-        return run_claude_code(prompt, working_dir, system_prompt=system_prompt, **kwargs)
+        return run_claude_code(prompt, working_dir, system_prompt=system_prompt,
+                               session_id=session_id, **kwargs)
     elif tool == "cursor":
-        # Cursor doesn't support system prompts natively, so prepend to the main prompt
+        # Cursor doesn't support system prompts or session resumption natively
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{prompt}"
         else:
             full_prompt = prompt
+        # Note: session_id is ignored for Cursor (no session support)
         return run_cursor_agent(full_prompt, working_dir, **kwargs)
     else:
         raise ValueError(f"Unknown tool: {tool}")
@@ -287,6 +296,7 @@ def _process_stream_line(line: str, result: CLIResult):
             print(f"  🤖 Model: {model}")
             if session_id:
                 print(f"  📎 Session: {session_id}")
+                result.session_id = session_id  # Capture for potential session resumption
 
         elif event_type == "result":
             # Final result - extract the text
@@ -487,6 +497,22 @@ IMPLEMENTER OUTPUT:
 {implementer_output}
 
 Check the project directory for the actual files. Verify the implementation is correct.
+"""
+
+# Optional encouragement text for web search (enabled via encourage_web_search flag)
+IMPLEMENTER_WEB_SEARCH_ENCOURAGEMENT = """
+IMPORTANT - USE WEB SEARCH PROACTIVELY:
+- Before using unfamiliar libraries or APIs, search for current docs/examples
+- When you encounter errors, search for the error message + solution
+- When unsure about best practices or syntax, look it up first
+- Don't guess - verify with WebSearch
+"""
+
+VERIFIER_WEB_SEARCH_ENCOURAGEMENT = """
+IMPORTANT - PREFER WEB_SEARCH OVER BLIND RETRY:
+- When you see unfamiliar errors, recommend WEB_SEARCH to find solutions
+- Don't recommend RETRY if you're not sure what the fix is - search first
+- Use WEB_SEARCH for API changes, deprecations, or version-specific issues
 """
 
 SMOKE_TEST_SYSTEM_PROMPT = """\
@@ -1734,6 +1760,7 @@ def run_orchestration(
     target_supabase_service_key: Optional[str] = None,
     target_supabase_db_url: Optional[str] = None,
     target_supabase_project_ref: Optional[str] = None,
+    encourage_web_search: bool = False,
 ):
     """
     Main orchestration loop:
@@ -1862,6 +1889,10 @@ def run_orchestration(
         # Track learnings to pass to future steps
         step_learnings = []
 
+        # Session ID for conversation continuity during retries (Claude only)
+        # This lets the implementer remember what it tried on previous attempts
+        step_session_id = None
+
         print(f"\n{'=' * 60}")
         print(f"  STEP {step_num}/{len(steps)}: {step['title']}")
         print(f"{'=' * 60}")
@@ -1880,7 +1911,19 @@ def run_orchestration(
                 completed_steps="\n".join(completed_descriptions) if completed_descriptions else "None yet",
             )
 
-            impl_result = run_tool(implementer_tool, impl_prompt, project_dir)
+            # Add web search encouragement if enabled
+            if encourage_web_search:
+                impl_prompt += IMPLEMENTER_WEB_SEARCH_ENCOURAGEMENT
+
+            # Pass session_id for retries - lets implementer remember previous attempts
+            # (Only works for Claude; Cursor ignores session_id)
+            impl_result = run_tool(implementer_tool, impl_prompt, project_dir,
+                                   session_id=step_session_id)
+
+            # Capture session_id from first attempt for use in retries
+            if not step_session_id and impl_result.session_id:
+                step_session_id = impl_result.session_id
+                print(f"  📎 Session captured for retry continuity: {step_session_id[:8]}...")
 
             log_step(store, run_id, step_num, "implement", implementer_tool,
                      impl_prompt, impl_result, build_phase=step.get("build_phase"))
@@ -1918,11 +1961,16 @@ def run_orchestration(
                 implementer_output=impl_result.text_result,
             )
 
+            # Build verifier system prompt with optional web search encouragement
+            verifier_system = VERIFIER_SYSTEM_PROMPT
+            if encourage_web_search:
+                verifier_system += VERIFIER_WEB_SEARCH_ENCOURAGEMENT
+
             verify_result = run_tool(
                 verifier_tool,
                 prompt=verify_prompt,
                 working_dir=project_dir,
-                system_prompt=VERIFIER_SYSTEM_PROMPT,
+                system_prompt=verifier_system,
             )
 
             log_step(store, run_id, step_num, "verify", verifier_tool,
@@ -2580,6 +2628,8 @@ def main():
                         help="Max retries per step (default: 2)")
     parser.add_argument("--skip-smoke-test", action="store_true",
                         help="Skip the smoke test phase")
+    parser.add_argument("--encourage-web-search", action="store_true",
+                        help="Encourage agents to use WebSearch proactively")
     parser.add_argument("--planner", choices=["claude", "cursor"], default="claude",
                         help="Tool for planning (default: claude)")
     parser.add_argument("--implementer", choices=["claude", "cursor"], default="cursor",
@@ -2645,6 +2695,7 @@ def main():
         target_supabase_service_key=args.supabase_service_key,
         target_supabase_db_url=args.supabase_db_url,
         target_supabase_project_ref=args.supabase_project_ref,
+        encourage_web_search=args.encourage_web_search,
     )
 
 
