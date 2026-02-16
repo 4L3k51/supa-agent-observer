@@ -52,6 +52,10 @@ DEFAULT_PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 CLAUDE_CODE_TIMEOUT = 600   # 10 min for planning/verification
 CURSOR_TIMEOUT = 900        # 15 min for implementation (can be complex)
 CURSOR_IDLE_TIMEOUT = 120   # Kill cursor if no output for 2 min (hanging bug workaround)
+RLS_TEST_TIMEOUT = 1200     # 20 min for RLS tests (creates users, runs multiple curl commands)
+API_VERIFY_TIMEOUT = 600    # 10 min for API verification
+SMOKE_TEST_TIMEOUT = 1200   # 20 min for smoke test (installs deps, builds, runs app, tests auth)
+BROWSER_TEST_TIMEOUT = 1200 # 20 min total for all browser tests
 MAX_RESOLUTIONS_PER_STEP = 7  # total resolution actions (search, diagnostic, retry) before giving up
 MAX_SMOKE_TEST_RETRIES = 2    # max fix attempts after smoke test failures
 MAX_BROWSER_TEST_RETRIES = 2  # max fix attempts after browser test failures
@@ -1865,6 +1869,7 @@ def run_browser_tests(
     supabase_url: str,
     supabase_anon_key: str,
     supabase_service_key: str,
+    timeout: Optional[int] = None,
 ) -> dict:
     """
     Run Playwright browser tests from a generated test file.
@@ -1875,6 +1880,7 @@ def run_browser_tests(
         supabase_url: Supabase project URL
         supabase_anon_key: Supabase anon key
         supabase_service_key: Supabase service role key
+        timeout: Optional timeout in seconds for the entire test suite
 
     Returns dict with:
         - passed: int
@@ -1904,6 +1910,7 @@ def run_browser_tests(
             supabase_anon_key=supabase_anon_key,
             supabase_service_key=supabase_service_key,
             headless=True,
+            timeout=timeout,
         )
 
         return result.to_dict()
@@ -2497,6 +2504,7 @@ def run_orchestration(
                                 prompt=rls_prompt,
                                 working_dir=project_dir,
                                 system_prompt=RLS_TEST_SYSTEM_PROMPT,
+                                timeout=RLS_TEST_TIMEOUT,
                             )
 
                             # Log with redacted credentials
@@ -2545,6 +2553,7 @@ def run_orchestration(
                                 prompt=api_verify_prompt,
                                 working_dir=project_dir,
                                 system_prompt=API_VERIFY_SYSTEM_PROMPT,
+                                timeout=API_VERIFY_TIMEOUT,
                             )
 
                             # Log with redacted credentials
@@ -2916,6 +2925,7 @@ If the app has authentication:
                 prompt=smoke_prompt,
                 working_dir=project_dir,
                 system_prompt=SMOKE_TEST_SYSTEM_PROMPT,
+                timeout=SMOKE_TEST_TIMEOUT,
             )
 
             # Log with redacted credentials
@@ -3158,6 +3168,7 @@ Focus on the root cause - the errors above contain specific details about what's
                             supabase_url=target_supabase_url,
                             supabase_anon_key=target_supabase_anon_key,
                             supabase_service_key=target_supabase_service_key,
+                            timeout=BROWSER_TEST_TIMEOUT,
                         )
 
                         if browser_results.get("error"):

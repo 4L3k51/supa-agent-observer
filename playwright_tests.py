@@ -368,16 +368,46 @@ def run_tests_sync(
     supabase_anon_key: str,
     supabase_service_key: str,
     headless: bool = True,
+    timeout: Optional[int] = None,
 ) -> TestSuiteResult:
-    """Synchronous wrapper for running tests."""
-    return asyncio.run(run_generated_tests(
-        test_file_path=test_file_path,
-        app_url=app_url,
-        supabase_url=supabase_url,
-        supabase_anon_key=supabase_anon_key,
-        supabase_service_key=supabase_service_key,
-        headless=headless,
-    ))
+    """Synchronous wrapper for running tests.
+
+    Args:
+        timeout: Optional timeout in seconds for the entire test suite.
+    """
+    async def run_with_timeout():
+        if timeout:
+            try:
+                return await asyncio.wait_for(
+                    run_generated_tests(
+                        test_file_path=test_file_path,
+                        app_url=app_url,
+                        supabase_url=supabase_url,
+                        supabase_anon_key=supabase_anon_key,
+                        supabase_service_key=supabase_service_key,
+                        headless=headless,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                result = TestSuiteResult()
+                result.results.append(TestResult(
+                    name="timeout",
+                    status="FAIL",
+                    error=f"Browser tests timed out after {timeout}s",
+                ))
+                return result
+        else:
+            return await run_generated_tests(
+                test_file_path=test_file_path,
+                app_url=app_url,
+                supabase_url=supabase_url,
+                supabase_anon_key=supabase_anon_key,
+                supabase_service_key=supabase_service_key,
+                headless=headless,
+            )
+
+    return asyncio.run(run_with_timeout())
 # ─────────────────────────────────────────────
 # CLI Interface
 # ─────────────────────────────────────────────
