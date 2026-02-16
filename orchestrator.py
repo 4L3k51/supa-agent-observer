@@ -2486,8 +2486,52 @@ def run_orchestration(
                                 )
                                 break
 
-                        # ── Run rls_test if migration succeeded ──────
+                        # ── Run API verification for all schema steps ──────
+                        # Simple connectivity check: one request per table, check for 200
                         if target_supabase_url and target_supabase_anon_key:
+                            print(f"\n  ▶ Verifying API access to tables...")
+                            print(f"  {'─' * 50}")
+
+                            api_verify_prompt = API_VERIFY_PROMPT_TEMPLATE.format(
+                                step_number=step_num,
+                                step_title=step["title"],
+                                supabase_url=target_supabase_url,
+                                supabase_anon_key=target_supabase_anon_key,
+                                supabase_service_key=target_supabase_service_key,
+                            )
+
+                            api_verify_result = run_tool(
+                                verifier_tool,
+                                prompt=api_verify_prompt,
+                                working_dir=project_dir,
+                                system_prompt=API_VERIFY_SYSTEM_PROMPT,
+                                timeout=API_VERIFY_TIMEOUT,
+                            )
+
+                            # Log with redacted credentials
+                            redacted_api_verify_prompt = redact_credentials(
+                                api_verify_prompt, credentials_to_redact
+                            )
+                            log_step(store, run_id, step_num, "api_verify", verifier_tool,
+                                     redacted_api_verify_prompt, api_verify_result, build_phase="schema")
+
+                            api_verify = parse_api_verify_result(api_verify_result.text_result)
+                            step_runtime_results["api_verify"] = api_verify
+
+                            api_emoji = "✅" if api_verify["status"] == "SUCCESS" else "❌"
+                            print(f"\n  {api_emoji} API verification: {api_verify['status']}")
+                            print(f"     Tables checked: {api_verify['tables_checked']}, OK: {api_verify['tables_ok']}")
+                            if api_verify["errors"]:
+                                print(f"     Errors:")
+                                for err in api_verify["errors"]:
+                                    print(f"       • {err}")
+
+                        # ── Run RLS test only if step mentions RLS-related work ──────
+                        rls_keywords = ["row level security", "rls", "create policy", "enable rls", "policy"]
+                        step_text = (step.get("title", "") + " " + step.get("instructions", "")).lower()
+                        step_mentions_rls = any(k in step_text for k in rls_keywords)
+
+                        if target_supabase_url and target_supabase_anon_key and step_mentions_rls:
                             print(f"\n  ▶ Testing RLS policies...")
                             print(f"  {'─' * 50}")
 
@@ -2533,45 +2577,6 @@ def run_orchestration(
                             if rls["errors"]:
                                 print(f"     Errors:")
                                 for err in rls["errors"]:
-                                    print(f"       • {err}")
-
-                            # ── Run API verification alongside RLS tests ──────
-                            # Simple connectivity check: one request per table, check for 200
-                            print(f"\n  ▶ Verifying API access to tables...")
-                            print(f"  {'─' * 50}")
-
-                            api_verify_prompt = API_VERIFY_PROMPT_TEMPLATE.format(
-                                step_number=step_num,
-                                step_title=step["title"],
-                                supabase_url=target_supabase_url,
-                                supabase_anon_key=target_supabase_anon_key,
-                                supabase_service_key=target_supabase_service_key,
-                            )
-
-                            api_verify_result = run_tool(
-                                verifier_tool,
-                                prompt=api_verify_prompt,
-                                working_dir=project_dir,
-                                system_prompt=API_VERIFY_SYSTEM_PROMPT,
-                                timeout=API_VERIFY_TIMEOUT,
-                            )
-
-                            # Log with redacted credentials
-                            redacted_api_verify_prompt = redact_credentials(
-                                api_verify_prompt, credentials_to_redact
-                            )
-                            log_step(store, run_id, step_num, "api_verify", verifier_tool,
-                                     redacted_api_verify_prompt, api_verify_result, build_phase="schema")
-
-                            api_verify = parse_api_verify_result(api_verify_result.text_result)
-                            step_runtime_results["api_verify"] = api_verify
-
-                            api_emoji = "✅" if api_verify["status"] == "SUCCESS" else "❌"
-                            print(f"\n  {api_emoji} API verification: {api_verify['status']}")
-                            print(f"     Tables checked: {api_verify['tables_checked']}, OK: {api_verify['tables_ok']}")
-                            if api_verify["errors"]:
-                                print(f"     Errors:")
-                                for err in api_verify["errors"]:
                                     print(f"       • {err}")
 
                             # Fail if RLS not enforced OR grants are missing
