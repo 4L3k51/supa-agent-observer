@@ -54,6 +54,7 @@ CURSOR_TIMEOUT = 900        # 15 min for implementation (can be complex)
 CURSOR_IDLE_TIMEOUT = 120   # Kill cursor if no output for 2 min (hanging bug workaround)
 MAX_RESOLUTIONS_PER_STEP = 7  # total resolution actions (search, diagnostic, retry) before giving up
 MAX_SMOKE_TEST_RETRIES = 2    # max fix attempts after smoke test failures
+MAX_BROWSER_TEST_RETRIES = 2  # max fix attempts after browser test failures
 
 # CLI commands
 CLAUDE_CODE_CMD = "claude"
@@ -953,6 +954,28 @@ async def test_auth_redirect(ctx):
 ```
 
 First examine the relevant component files, then write the complete test file.
+"""
+
+BROWSER_TEST_FIX_PROMPT_TEMPLATE = """\
+Browser tests failed. Fix the issues so the tests pass.
+
+PROJECT GOAL: {user_prompt}
+
+FAILED TESTS:
+{failed_tests}
+
+The test file is at: {test_file_path}
+
+Common issues to check:
+1. Real-time subscriptions not set up correctly (missing .subscribe() or wrong channel)
+2. RLS policies blocking real-time updates (need SELECT policy for authenticated users)
+3. UI elements not matching selectors (check actual component code)
+4. Race conditions - need longer timeouts for real-time propagation
+5. Auth state not persisting correctly between page navigations
+
+Examine the test file and the relevant application code, then fix the root cause.
+If the issue is in the test file itself (wrong selectors), update the test file.
+If the issue is in the application code (missing subscription, RLS), fix the app.
 """
 
 
@@ -2980,28 +3003,38 @@ Focus on the root cause - the errors above contain specific details about what's
             else:
                 print(f"  ✓ Tests generated at {test_file_path}")
 
-                # Step 2: Start dev server and run tests
+                # Step 2: Start dev server and run tests with retry loop
                 dev_server = None
+                browser_test_retry = 0
+                browser_results = None
+
                 try:
                     print(f"  Starting dev server...")
                     dev_server, app_port = start_dev_server(project_dir, timeout=60)
                     app_url = f"http://localhost:{app_port}"
                     print(f"  ✓ Dev server running at {app_url}")
 
-                    # Run the generated browser tests
-                    print(f"  Running browser tests...")
-                    browser_results = run_browser_tests(
-                        test_file_path=test_file_path,
-                        app_url=app_url,
-                        supabase_url=target_supabase_url,
-                        supabase_anon_key=target_supabase_anon_key,
-                        supabase_service_key=target_supabase_service_key,
-                    )
+                    # Browser test retry loop
+                    while browser_test_retry <= MAX_BROWSER_TEST_RETRIES:
+                        if browser_test_retry > 0:
+                            print(f"\n{'─' * 60}")
+                            print(f"  BROWSER TESTS - RETRY {browser_test_retry}/{MAX_BROWSER_TEST_RETRIES}")
+                            print(f"{'─' * 60}")
 
-                    if browser_results.get("error"):
-                        print(f"  ⚠️ Browser tests error: {browser_results['error']}")
-                    else:
-                        # Log each test result as a separate event
+                        # Run the generated browser tests
+                        print(f"  Running browser tests...")
+                        browser_results = run_browser_tests(
+                            test_file_path=test_file_path,
+                            app_url=app_url,
+                            supabase_url=target_supabase_url,
+                            supabase_anon_key=target_supabase_anon_key,
+                            supabase_service_key=target_supabase_service_key,
+                        )
+
+                        if browser_results.get("error"):
+                            print(f"  ⚠️ Browser tests error: {browser_results['error']}")
+                            break  # Can't retry infrastructure errors
+
                         passed = browser_results.get("passed", 0)
                         failed = browser_results.get("failed", 0)
                         skipped = browser_results.get("skipped", 0)
@@ -3014,7 +3047,7 @@ Focus on the root cause - the errors above contain specific details about what's
                             if test_result.get("error"):
                                 print(f"        Error: {test_result['error']}")
 
-                        # Log browser test results to storage
+                        # Log browser test results
                         browser_test_result = CLIResult()
                         browser_test_result.text_result = json.dumps(browser_results, indent=2)
                         browser_test_result.exit_code = 1 if failed > 0 else 0
@@ -3031,14 +3064,105 @@ Focus on the root cause - the errors above contain specific details about what's
                             for r in browser_results.get("results", [])
                         ]
 
-                        log_step(store, run_id, len(steps) + MAX_SMOKE_TEST_RETRIES + 3,
+                        log_step(store, run_id, len(steps) + MAX_SMOKE_TEST_RETRIES + 3 + browser_test_retry * 2,
                                  "browser_test", "playwright", "Playwright browser tests",
                                  browser_test_result, build_phase="testing",
                                  credentials_to_redact=credentials_to_redact)
 
-                        # Update final status if browser tests failed
-                        if failed > 0 and run_final_status == "completed":
+                        # If all tests pass, we're done
+                        if failed == 0:
+                            print(f"  ✓ All browser tests passed!")
+                            break
+
+                        # If failures and retries left, create fix step
+                        if browser_test_retry < MAX_BROWSER_TEST_RETRIES:
+                            print(f"\n  🔄 Browser tests failed - creating fix step...")
+
+                            # Build description of failed tests
+                            failed_tests_desc = "\n".join(
+                                f"- {r['name']}: {r.get('error', 'Unknown error')}"
+                                for r in browser_results.get("results", [])
+                                if r["status"] == "FAIL"
+                            )
+
+                            fix_prompt = BROWSER_TEST_FIX_PROMPT_TEMPLATE.format(
+                                user_prompt=user_prompt,
+                                failed_tests=failed_tests_desc,
+                                test_file_path=test_file_path,
+                            )
+
+                            if encourage_web_search:
+                                fix_prompt += IMPLEMENTER_WEB_SEARCH_ENCOURAGEMENT
+
+                            print(f"\n  ▶ Implementing browser test fix...")
+                            print(f"  {'─' * 50}")
+
+                            fix_result = run_tool(implementer_tool, fix_prompt, project_dir)
+
+                            log_step(store, run_id, len(steps) + MAX_SMOKE_TEST_RETRIES + 4 + browser_test_retry * 2,
+                                     "browser_test_fix", implementer_tool, "Fix browser test failures",
+                                     fix_result, build_phase="testing",
+                                     credentials_to_redact=credentials_to_redact)
+
+                            # Verify the fix
+                            print(f"\n  ▶ Verifying browser test fix...")
+                            print(f"  {'─' * 50}")
+
+                            verify_prompt = f"""Verify that the browser test fix was applied correctly.
+
+FAILED TESTS THAT WERE ADDRESSED:
+{failed_tests_desc}
+
+IMPLEMENTER OUTPUT:
+{fix_result.text_result[:3000] if fix_result.text_result else 'No output'}
+
+Check:
+1. Were the identified issues actually fixed?
+2. Is the fix correct (not a hack or workaround)?
+3. Should we re-run the browser tests?
+
+FORMAT your response as:
+STATUS: PASS | FAIL | PARTIAL
+SUMMARY: [1-2 sentence assessment]
+RECOMMENDATION: PROCEED | RETRY
+"""
+                            verifier_system = VERIFIER_SYSTEM_PROMPT
+                            if encourage_web_search:
+                                verifier_system += VERIFIER_WEB_SEARCH_ENCOURAGEMENT
+
+                            verify_result = run_tool(
+                                verifier_tool,
+                                prompt=verify_prompt,
+                                working_dir=project_dir,
+                                system_prompt=verifier_system,
+                            )
+
+                            log_step(store, run_id, len(steps) + MAX_SMOKE_TEST_RETRIES + 5 + browser_test_retry * 2,
+                                     "browser_test_fix_verify", verifier_tool, "Verify browser test fix",
+                                     verify_result, build_phase="testing",
+                                     credentials_to_redact=credentials_to_redact)
+
+                            fix_verification = parse_verification(verify_result.text_result)
+                            status_emoji = {"PASS": "✅", "FAIL": "❌", "PARTIAL": "⚠️"}.get(
+                                fix_verification["status"], "❓"
+                            )
+                            print(f"\n  {status_emoji} Fix verification: {fix_verification['status']}")
+                            print(f"     Summary: {fix_verification['summary']}")
+
+                            browser_test_retry += 1
+                            continue  # Re-run browser tests
+
+                        # No retries left
+                        break
+
+                    # Determine final status after retry loop
+                    if browser_results and browser_results.get("failed", 0) > 0:
+                        if run_final_status == "completed":
                             run_final_status = "completed_browser_tests_failing"
+                        if browser_test_retry > 0:
+                            print(f"\n  ⚠️ Browser tests still failing after {browser_test_retry} fix attempt(s)")
+                    elif browser_test_retry > 0:
+                        print(f"\n  ✅ Browser tests passed after {browser_test_retry} fix attempt(s)")
 
                 except TimeoutError as e:
                     print(f"  ⚠️ {e}")

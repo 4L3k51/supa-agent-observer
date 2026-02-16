@@ -277,6 +277,7 @@ def show_timeline(store: SupabaseStorage, run_id: str):
             "migration_exec": "🗄️", "rls_test": "🔐", "edge_function_deploy": "⚡",
             "research": "🔍", "diagnostic": "🩺", "smoke_test": "🧪", "approach_analysis": "📊",
             "browser_test_gen": "✍️", "browser_test": "🎭",
+            "browser_test_fix": "🔧", "browser_test_fix_verify": "🔍",
         }.get(s["phase"], "❓")
 
         tool_label = "Claude Code" if s["tool"] == "claude_code" else "Cursor"
