@@ -51,6 +51,7 @@ DEFAULT_PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 # Timeouts (seconds) - generous because these agents can be slow
 CLAUDE_CODE_TIMEOUT = 600   # 10 min for planning/verification
 CURSOR_TIMEOUT = 900        # 15 min for implementation (can be complex)
+CLAUDE_IMPL_TIMEOUT = 1200  # 20 min for implementation when using Claude as implementer
 CURSOR_IDLE_TIMEOUT = 120   # Kill cursor if no output for 2 min (hanging bug workaround)
 RLS_TEST_TIMEOUT = 1200     # 20 min for RLS tests (creates users, runs multiple curl commands)
 API_VERIFY_TIMEOUT = 600    # 10 min for API verification
@@ -976,6 +977,15 @@ Generate Playwright E2E tests for this Supabase app. The tests will verify:
 3. Create resource - authenticated user can create the main resource
 4. Real-time create - user B sees user A's creation without refresh
 5. Real-time delete - user B sees user A's deletion without refresh
+
+CRITICAL - REALTIME TEST REQUIREMENTS:
+Realtime tests MUST verify cross-user propagation using two separate browser contexts.
+User A performs an action while User B is already on the page. Assert that User B's
+page updates without any navigation or refresh. If cross-user testing requires setup
+(like inviting a user to a shared room first), do the setup — don't skip it. Never
+downgrade a realtime test to single-user verification where each user only sees their
+own actions. If you can't test actual cross-user realtime, fail the test rather than
+faking it with a comment explaining why you didn't test it.
 
 PROJECT GOAL: {user_prompt}
 
@@ -2332,8 +2342,11 @@ def run_orchestration(
             # (Only works for Claude; Cursor ignores session_id)
             if step_session_id:
                 print(f"  🔄 Resuming session: {step_session_id[:8]}...")
+            # Use longer timeout for implementation (complex steps like testing take time)
+            impl_timeout = CLAUDE_IMPL_TIMEOUT if implementer_tool == "claude" else CURSOR_TIMEOUT
             impl_result = run_tool(implementer_tool, impl_prompt, project_dir,
-                                   session_id=step_session_id)
+                                   session_id=step_session_id,
+                                   timeout=impl_timeout)
 
             # Capture session_id from first attempt for use in retries
             if not step_session_id and impl_result.session_id:
