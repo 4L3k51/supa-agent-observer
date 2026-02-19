@@ -133,6 +133,20 @@ END $$;
 -- Index for querying errors
 CREATE INDEX IF NOT EXISTS idx_steps_errors ON orchestrator_steps USING GIN (errors_normalized);
 
+-- Migration: add skills_info column if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'skills_info'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN skills_info JSONB;
+    END IF;
+END $$;
+
+-- Index for querying skills usage
+CREATE INDEX IF NOT EXISTS idx_steps_skills ON orchestrator_steps USING GIN (skills_info);
+
 
 -- ============================================================
 -- Useful views for analysis

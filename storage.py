@@ -94,6 +94,7 @@ class SupabaseStorage:
         build_phase: Optional[str] = None,
         commands_executed: Optional[list] = None,
         errors_normalized: Optional[list] = None,
+        skills_info: Optional[dict] = None,
     ) -> int:
         """Log a step and return the step ID. Raises on failure."""
         result = self.client.table("orchestrator_steps").insert({
@@ -110,6 +111,7 @@ class SupabaseStorage:
             "build_phase": build_phase,
             "commands_executed": commands_executed,
             "errors_normalized": errors_normalized,
+            "skills_info": skills_info,
             "timestamp": _now(),
         }).execute()
 

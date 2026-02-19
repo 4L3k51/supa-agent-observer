@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -87,6 +88,38 @@ class CLIResult:
         self.session_id: str = ""          # session ID for resuming conversations
 
 
+# ─────────────────────────────────────────────
+# Skills Injection
+# ─────────────────────────────────────────────
+
+def load_skill(skills_source: str, build_phase: Optional[str]) -> str:
+    """Load skill content from a markdown file matching the build_phase.
+
+    Args:
+        skills_source: Path to the skills directory
+        build_phase: The current step's build phase (e.g., "setup", "schema", "backend")
+
+    Returns:
+        Content of the matching markdown file, or empty string if not found.
+    """
+    if not build_phase:
+        return ""
+
+    skills_dir = Path(skills_source)
+    if not skills_dir.exists():
+        return ""
+
+    # Look for a markdown file matching the build_phase
+    skill_file = skills_dir / f"{build_phase}.md"
+    if skill_file.exists():
+        try:
+            return skill_file.read_text()
+        except Exception:
+            return ""
+
+    return ""
+
+
 def run_claude_code(
     prompt: str,
     working_dir: str,
@@ -136,13 +169,45 @@ def run_cursor_agent(
 
 
 def run_tool(tool: str, prompt: str, working_dir: str, system_prompt: Optional[str] = None,
-             session_id: Optional[str] = None, **kwargs) -> CLIResult:
+             session_id: Optional[str] = None, skills_mode: str = "none",
+             skills_source: str = "./skills", build_phase: Optional[str] = None,
+             skills_filter: str = "phase-matched",
+             **kwargs) -> CLIResult:
     """Dispatch to claude or cursor based on tool name.
 
     Args:
         session_id: For Claude only - resume a previous session for conversation continuity.
                    Useful for retries within a step so the agent remembers what it tried.
+        skills_mode: "none" | "passive" | "on-demand" - how to inject skills.
+        skills_source: Path to the skills directory.
+        build_phase: Current step's build phase for skill file matching.
+        skills_filter: "all" (always load all.md) | "phase-matched" (load phase-specific file).
     """
+    # Handle skills injection based on mode
+    if skills_mode == "passive":
+        # Determine which skill file to load based on filter
+        if skills_filter == "all":
+            skill_content = load_skill(skills_source, "all")
+        elif build_phase:
+            skill_content = load_skill(skills_source, build_phase)
+        else:
+            skill_content = ""
+
+        if skill_content:
+            if system_prompt:
+                system_prompt = f"{system_prompt}\n\n{skill_content}"
+            else:
+                system_prompt = skill_content
+    elif skills_mode == "on-demand":
+        # Copy skill files to working_dir/skills/
+        skills_src = Path(skills_source)
+        if skills_src.exists():
+            skills_dest = Path(working_dir) / "skills"
+            if skills_dest.exists():
+                shutil.rmtree(skills_dest)
+            shutil.copytree(skills_src, skills_dest)
+            prompt = f"{prompt}\n\nRelevant skill documentation is available in ./skills/ if you need it."
+
     if tool == "claude":
         return run_claude_code(prompt, working_dir, system_prompt=system_prompt,
                                session_id=session_id, **kwargs)
@@ -2094,7 +2159,8 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
              build_phase: Optional[str] = None,
              commands_executed: Optional[list] = None,
              credentials_to_redact: Optional[dict] = None,
-             parsed_errors: Optional[list] = None) -> int:
+             parsed_errors: Optional[list] = None,
+             skills_info: Optional[dict] = None) -> int:
     """Log a step to storage. Returns step ID.
 
     If credentials_to_redact is provided, all text fields will be redacted.
@@ -2155,6 +2221,7 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
         build_phase=build_phase,
         commands_executed=commands_executed,
         errors_normalized=errors_normalized if errors_normalized else None,
+        skills_info=skills_info,
     )
 
     # Batch insert events for performance - step must exist first (FK constraint)
@@ -2184,6 +2251,9 @@ def run_orchestration(
     target_supabase_db_url: Optional[str] = None,
     target_supabase_project_ref: Optional[str] = None,
     encourage_web_search: bool = False,
+    skills_mode: str = "none",
+    skills_source: str = "./skills",
+    skills_filter: str = "phase-matched",
 ):
     """
     Main orchestration loop:
@@ -2344,17 +2414,38 @@ def run_orchestration(
                 print(f"  🔄 Resuming session: {step_session_id[:8]}...")
             # Use longer timeout for implementation (complex steps like testing take time)
             impl_timeout = CLAUDE_IMPL_TIMEOUT if implementer_tool == "claude" else CURSOR_TIMEOUT
+            # Determine which skill file would be injected (for logging)
+            current_build_phase = step.get("build_phase")
+            skill_file_injected = None
+            if skills_mode != "none":
+                if skills_filter == "all":
+                    skill_path = Path(skills_source) / "all.md"
+                    if skill_path.exists():
+                        skill_file_injected = "all.md"
+                elif current_build_phase:
+                    skill_path = Path(skills_source) / f"{current_build_phase}.md"
+                    if skill_path.exists():
+                        skill_file_injected = f"{current_build_phase}.md"
+
             impl_result = run_tool(implementer_tool, impl_prompt, project_dir,
                                    session_id=step_session_id,
-                                   timeout=impl_timeout)
+                                   timeout=impl_timeout,
+                                   skills_mode=skills_mode,
+                                   skills_source=skills_source,
+                                   build_phase=current_build_phase,
+                                   skills_filter=skills_filter)
 
             # Capture session_id from first attempt for use in retries
             if not step_session_id and impl_result.session_id:
                 step_session_id = impl_result.session_id
                 print(f"  📎 Session captured for retry continuity: {step_session_id[:8]}...")
 
+            # Build skills info for logging
+            skills_info = {"mode": skills_mode, "filter": skills_filter, "skill_file": skill_file_injected}
+
             log_step(store, run_id, step_num, "implement", implementer_tool,
-                     impl_prompt, impl_result, build_phase=step.get("build_phase"))
+                     impl_prompt, impl_result, build_phase=current_build_phase,
+                     skills_info=skills_info)
 
             # Re-write .env.local after Cursor (it often overwrites with placeholders)
             write_env_local(
@@ -3037,14 +3128,33 @@ Focus on the root cause - the errors above contain specific details about what's
 
                     if fix_session_id:
                         print(f"  🔄 Resuming session: {fix_session_id[:8]}...")
+
+                    # Determine skill file for logging (fix phase)
+                    fix_skill_file = None
+                    if skills_mode != "none":
+                        if skills_filter == "all":
+                            fix_skill_path = Path(skills_source) / "all.md"
+                            if fix_skill_path.exists():
+                                fix_skill_file = "all.md"
+                        else:
+                            fix_skill_path = Path(skills_source) / "fix.md"
+                            if fix_skill_path.exists():
+                                fix_skill_file = "fix.md"
+
                     fix_result = run_tool(implementer_tool, fix_prompt, project_dir,
-                                          session_id=fix_session_id)
+                                          session_id=fix_session_id,
+                                          skills_mode=skills_mode,
+                                          skills_source=skills_source,
+                                          build_phase="fix",
+                                          skills_filter=skills_filter)
 
                     if not fix_session_id and fix_result.session_id:
                         fix_session_id = fix_result.session_id
 
+                    fix_skills_info = {"mode": skills_mode, "filter": skills_filter, "skill_file": fix_skill_file}
                     log_step(store, run_id, fix_step["number"], "implement_fix", implementer_tool,
-                             fix_prompt, fix_result, build_phase="fix")
+                             fix_prompt, fix_result, build_phase="fix",
+                             skills_info=fix_skills_info)
 
                     # Verify the fix
                     print(f"\n  ▶ Verifying fix...")
@@ -3255,12 +3365,30 @@ Focus on the root cause - the errors above contain specific details about what's
                             print(f"\n  ▶ Implementing browser test fix...")
                             print(f"  {'─' * 50}")
 
-                            fix_result = run_tool(implementer_tool, fix_prompt, project_dir)
+                            # Determine skill file for logging (testing phase)
+                            browser_fix_skill_file = None
+                            if skills_mode != "none":
+                                if skills_filter == "all":
+                                    browser_fix_skill_path = Path(skills_source) / "all.md"
+                                    if browser_fix_skill_path.exists():
+                                        browser_fix_skill_file = "all.md"
+                                else:
+                                    browser_fix_skill_path = Path(skills_source) / "testing.md"
+                                    if browser_fix_skill_path.exists():
+                                        browser_fix_skill_file = "testing.md"
 
+                            fix_result = run_tool(implementer_tool, fix_prompt, project_dir,
+                                                  skills_mode=skills_mode,
+                                                  skills_source=skills_source,
+                                                  build_phase="testing",
+                                                  skills_filter=skills_filter)
+
+                            browser_fix_skills_info = {"mode": skills_mode, "filter": skills_filter, "skill_file": browser_fix_skill_file}
                             log_step(store, run_id, len(steps) + MAX_SMOKE_TEST_RETRIES + 4 + browser_test_retry * 2,
                                      "browser_test_fix", implementer_tool, "Fix browser test failures",
                                      fix_result, build_phase="testing",
-                                     credentials_to_redact=credentials_to_redact)
+                                     credentials_to_redact=credentials_to_redact,
+                                     skills_info=browser_fix_skills_info)
 
                             # Verify the fix
                             print(f"\n  ▶ Verifying browser test fix...")
@@ -3468,6 +3596,12 @@ def main():
                         help="Skip the smoke test phase")
     parser.add_argument("--encourage-web-search", action="store_true",
                         help="Encourage agents to use WebSearch proactively")
+    parser.add_argument("--skills-mode", choices=["none", "passive", "on-demand"], default="none",
+                        help="Skills injection mode: none (default), passive (append to system prompt), on-demand (copy to project)")
+    parser.add_argument("--skills-source", default="./skills",
+                        help="Path to skills directory (default: ./skills)")
+    parser.add_argument("--skills-filter", choices=["all", "phase-matched"], default="phase-matched",
+                        help="Skills filter: all (always load all.md), phase-matched (load phase-specific file, default)")
     parser.add_argument("--planner", choices=["claude", "cursor"], default="claude",
                         help="Tool for planning (default: claude)")
     parser.add_argument("--implementer", choices=["claude", "cursor"], default="cursor",
@@ -3534,6 +3668,9 @@ def main():
         target_supabase_db_url=args.supabase_db_url,
         target_supabase_project_ref=args.supabase_project_ref,
         encourage_web_search=args.encourage_web_search,
+        skills_mode=args.skills_mode,
+        skills_source=args.skills_source,
+        skills_filter=args.skills_filter,
     )
 
 
