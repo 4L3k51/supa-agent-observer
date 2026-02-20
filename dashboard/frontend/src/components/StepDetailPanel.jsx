@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { getStepDetail } from '../api';
 
 const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
@@ -51,18 +52,6 @@ const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
   const resolutionActions = parseJSON(step.resolution_actions);
   const errorCategories = parseJSON(step.error_categories);
 
-  const renderEvidence = (text) => {
-    if (!text) return null;
-    // Simple URL detection and linking
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
-    const parts = text.split(urlRegex);
-    return parts.map((part, i) => {
-      if (part.match(urlRegex)) {
-        return <a key={i} href={part} target="_blank" rel="noopener noreferrer">{part}</a>;
-      }
-      return part;
-    });
-  };
 
   return (
     <div className="step-detail-panel">
@@ -132,13 +121,17 @@ const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
             {step.classification_reasoning && (
               <div className="classification-reasoning">
                 <strong>Reasoning:</strong>
-                <p>{step.classification_reasoning}</p>
+                <div className="markdown-content">
+                  <ReactMarkdown>{step.classification_reasoning}</ReactMarkdown>
+                </div>
               </div>
             )}
             {step.classification_evidence && (
               <div className="classification-evidence">
                 <strong>Evidence:</strong>
-                <p>{renderEvidence(step.classification_evidence)}</p>
+                <div className="markdown-content">
+                  <ReactMarkdown>{step.classification_evidence}</ReactMarkdown>
+                </div>
               </div>
             )}
             <div className="observable-patterns">
@@ -163,7 +156,9 @@ const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
               {failures.map((f, i) => (
                 <div key={i} className="error-item">
                   <span className="error-category">{f.category || 'Unknown'}</span>
-                  <span className="error-message">{f.error}</span>
+                  <div className="error-message-markdown">
+                    <ReactMarkdown>{f.error || ''}</ReactMarkdown>
+                  </div>
                   {f.exit_code != null && (
                     <span className="error-exit-code">Exit code: {f.exit_code}</span>
                   )}
@@ -179,7 +174,11 @@ const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
             <h4>Resolution Actions</h4>
             <ul className="resolution-actions">
               {resolutionActions.map((action, i) => (
-                <li key={i}>{action}</li>
+                <li key={i}>
+                  <div className="markdown-content inline">
+                    <ReactMarkdown>{action}</ReactMarkdown>
+                  </div>
+                </li>
               ))}
             </ul>
           </div>
@@ -223,7 +222,9 @@ const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
           {showRaw && (
             <div className="raw-data">
               <h5>Errors Summary</h5>
-              <pre>{step.errors_summary || 'No errors summary'}</pre>
+              <div className="markdown-content">
+                <ReactMarkdown>{step.errors_summary || 'No errors summary'}</ReactMarkdown>
+              </div>
             </div>
           )}
         </div>

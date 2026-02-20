@@ -959,6 +959,205 @@ body {
   word-break: break-word;
 }
 
+/* Markdown rendered error messages */
+.error-message-markdown {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.error-message-markdown p {
+  margin: 0 0 12px 0;
+}
+
+.error-message-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.error-message-markdown h1,
+.error-message-markdown h2,
+.error-message-markdown h3,
+.error-message-markdown h4 {
+  color: var(--text-primary);
+  margin: 16px 0 8px 0;
+  font-weight: 600;
+}
+
+.error-message-markdown h1 { font-size: 18px; }
+.error-message-markdown h2 { font-size: 16px; }
+.error-message-markdown h3 { font-size: 14px; }
+.error-message-markdown h4 { font-size: 13px; }
+
+.error-message-markdown code {
+  background-color: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.error-message-markdown pre {
+  background-color: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.error-message-markdown pre code {
+  background: none;
+  padding: 0;
+}
+
+.error-message-markdown ul,
+.error-message-markdown ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.error-message-markdown li {
+  margin: 4px 0;
+}
+
+.error-message-markdown strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.error-message-markdown em {
+  font-style: italic;
+}
+
+.error-message-markdown a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.error-message-markdown a:hover {
+  text-decoration: underline;
+}
+
+.error-message-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+.error-message-markdown blockquote {
+  border-left: 3px solid var(--border-color);
+  padding-left: 12px;
+  margin: 12px 0;
+  color: var(--text-secondary);
+}
+
+/* Generic Markdown Content - used for all LLM-generated text */
+.markdown-content {
+  font-size: 13px;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.markdown-content p {
+  margin: 0 0 12px 0;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  color: var(--text-primary);
+  margin: 16px 0 8px 0;
+  font-weight: 600;
+}
+
+.markdown-content h1:first-child,
+.markdown-content h2:first-child,
+.markdown-content h3:first-child,
+.markdown-content h4:first-child {
+  margin-top: 0;
+}
+
+.markdown-content h1 { font-size: 18px; }
+.markdown-content h2 { font-size: 16px; }
+.markdown-content h3 { font-size: 14px; }
+.markdown-content h4 { font-size: 13px; }
+
+.markdown-content code {
+  background-color: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'SF Mono', Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.markdown-content pre {
+  background-color: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.markdown-content li {
+  margin: 4px 0;
+}
+
+.markdown-content strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.markdown-content em {
+  font-style: italic;
+}
+
+.markdown-content a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin: 16px 0;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid var(--border-color);
+  padding-left: 12px;
+  margin: 12px 0;
+  color: var(--text-secondary);
+}
+
+/* Inline markdown - for items within lists */
+.markdown-content.inline p {
+  margin: 0;
+  display: inline;
+}
+
+.markdown-content.inline {
+  display: inline;
+}
+
 .error-exit-code {
   display: block;
   margin-top: 8px;
