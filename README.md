@@ -327,27 +327,121 @@ The database also includes views for common queries:
 - `orchestrator_tool_usage` — tool call frequency
 - `orchestrator_commands` — shell commands executed
 
+## Analysis Dashboard
+
+A web-based dashboard for exploring run data, viewing step details, and analyzing cross-run patterns.
+
+### Quick Start
+
+```bash
+# Start the dashboard (production mode)
+python run_dashboard.py serve
+
+# Start with hot-reload for development
+python run_dashboard.py serve --dev
+```
+
+Then open http://localhost:8000 in your browser.
+
+### Features
+
+| Page | Description |
+|------|-------------|
+| **Run List** | All runs with status, duration, retry counts, classification breakdown. Filter by status, sort by any column. |
+| **Run Detail** | Step-by-step timeline with expandable details. Click any step to see classification, errors, resolution actions, web searches. |
+| **Patterns** | Cross-run analysis: error category heatmap, top failure patterns, self-correction leaderboard, tool comparison. |
+
+### AI Classification
+
+The dashboard includes an AI classifier that analyzes failed steps and categorizes them:
+
+| Classification | Meaning |
+|----------------|---------|
+| **Architectural** | Fundamental approach is wrong — needs different strategy |
+| **Implementation** | Right approach, wrong execution — fixable with retries |
+| **Clean Pass** | Step succeeded without retries |
+
+```bash
+# Classify all unclassified runs
+python run_dashboard.py classify
+
+# Classify a specific run
+python run_dashboard.py classify <run_id>
+
+# Force reclassification
+python run_dashboard.py classify <run_id> --force
+```
+
+Classification requires an `ANTHROPIC_API_KEY` in your `.env` file.
+
+### CLI Commands
+
+```bash
+# Start dashboard server
+python run_dashboard.py serve           # Production mode (serves built frontend)
+python run_dashboard.py serve --dev     # Dev mode (API only, run Vite separately)
+
+# Ingest reports from ./reports/ directory
+python run_dashboard.py ingest          # Ingest new reports only
+python run_dashboard.py ingest --force  # Re-ingest all reports
+
+# Run AI classification
+python run_dashboard.py classify        # Classify all unclassified
+python run_dashboard.py classify <id>   # Classify specific run
+```
+
+### Development
+
+For frontend development with hot-reload:
+
+```bash
+# Terminal 1: Start API server
+python run_dashboard.py serve --dev
+
+# Terminal 2: Start Vite dev server
+cd dashboard/frontend && npm run dev
+```
+
+Then open http://localhost:5173 (Vite proxies API calls to port 8000).
+
+To rebuild the production frontend:
+
+```bash
+cd dashboard/frontend && npm run build
+```
+
 ## Project Structure
 
 ```
 orchestrator/
 ├── orchestrator.py      # Main orchestration loop
 ├── analyzer.py          # Post-run analysis tool
+├── run_dashboard.py     # Dashboard CLI entry point
 ├── preflight.py         # Pre-run verification
 ├── storage.py           # Supabase storage backend
 ├── playwright_tests.py  # Browser test runner
 ├── migration.sql        # Database schema
 ├── requirements.txt     # Python dependencies
 ├── .env.example         # Environment template
-└── skills/              # Phase-specific guidance files
-    ├── all.md           # Universal guidance
-    ├── setup.md         # Project setup phase
-    ├── schema.md        # Database schema phase
-    ├── backend.md       # Backend/API phase
-    ├── frontend.md      # Frontend phase
-    ├── testing.md       # Testing phase
-    ├── deployment.md    # Deployment phase
-    └── fix.md           # Error fix phase
+├── skills/              # Phase-specific guidance files
+│   ├── all.md           # Universal guidance
+│   ├── setup.md         # Project setup phase
+│   ├── schema.md        # Database schema phase
+│   ├── backend.md       # Backend/API phase
+│   ├── frontend.md      # Frontend phase
+│   ├── testing.md       # Testing phase
+│   ├── deployment.md    # Deployment phase
+│   └── fix.md           # Error fix phase
+└── dashboard/           # Analysis dashboard
+    ├── backend/         # FastAPI backend
+    │   ├── app.py       # API routes
+    │   ├── db.py        # SQLite database layer
+    │   ├── ingest.py    # Report ingestion
+    │   └── classifier.py # AI classification
+    └── frontend/        # React frontend (Vite)
+        └── src/
+            ├── pages/   # RunList, RunDetail, Patterns
+            └── components/
 ```
 
 ## License
