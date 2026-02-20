@@ -18,7 +18,7 @@ The goal output: identify where documentation, examples, or training data need i
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.9+
 - [Claude Code CLI](https://github.com/anthropics/claude-code) installed and authenticated
 - [Cursor](https://cursor.sh/) installed (if using Cursor as implementer)
 - A Supabase project for logging
@@ -26,7 +26,7 @@ The goal output: identify where documentation, examples, or training data need i
 ### Setup
 
 ```bash
-# Clone and install dependencies
+# Clone and install core dependencies (python-dotenv, supabase)
 pip install -r requirements.txt
 
 # For browser tests (optional)
@@ -221,7 +221,7 @@ python orchestrator.py [prompt] [options]
 
 | Argument | Description |
 |----------|-------------|
-| `--max-retries N` | Max retries per step (default: 2) |
+| `--max-retries N` | Max RETRY verdicts per step (default: 2) |
 | `--skip-smoke-test` | Skip the smoke test phase |
 | `--encourage-web-search` | Encourage agents to use WebSearch proactively |
 
