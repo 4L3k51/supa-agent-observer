@@ -1,4 +1,4 @@
-# Claude × Cursor Orchestrator
+# Supa Agent Orchestrator
 
 Multi-agent observation framework that orchestrates Claude Code and Cursor to build Supabase apps, logging every decision and failure to analyze where AI coding agents break down.
 
