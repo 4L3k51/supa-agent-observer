@@ -18,8 +18,8 @@ const StepCard = ({ step, isSelected, onClick }) => {
     const verdict = step.final_verdict?.toUpperCase();
     const phase = step.phase?.toLowerCase() || '';
 
-    // Runtime test phases don't go through normal verdict flow
-    const runtimeTestPhases = [
+    // Phases that don't produce PROCEED/FAIL verdicts
+    const nonVerdictPhases = [
       'smoke_test',
       'browser_test',
       'browser_test_gen',
@@ -27,10 +27,19 @@ const StepCard = ({ step, isSelected, onClick }) => {
       'browser_test_fix_verify',
       'rls_test',
       'api_verify',
+      'approach_analysis',
+      'plan',
     ];
 
-    // Check if this is a runtime test phase (phase can be comma-separated)
-    const isRuntimeTest = runtimeTestPhases.some(p => phase.includes(p));
+    // Check if this is a non-verdict phase (phase can be comma-separated)
+    const isNonVerdictPhase = nonVerdictPhases.some(p => phase.includes(p));
+
+    // Determine badge text for non-verdict phases
+    const getNonVerdictBadgeText = () => {
+      if (phase.includes('plan')) return 'Plan';
+      if (phase.includes('approach_analysis')) return 'Analysis';
+      return 'Runtime Test';
+    };
 
     switch (verdict) {
       case 'PROCEED':
@@ -44,9 +53,9 @@ const StepCard = ({ step, isSelected, onClick }) => {
       case undefined:
       case null:
       default:
-        // For UNKNOWN or missing verdict, check if it's a runtime test phase
-        if (isRuntimeTest) {
-          return <span className="verdict-badge verdict-test">Runtime Test</span>;
+        // For UNKNOWN or missing verdict, check if it's a non-verdict phase
+        if (isNonVerdictPhase) {
+          return <span className="verdict-badge verdict-test">{getNonVerdictBadgeText()}</span>;
         }
         return <span className="verdict-badge verdict-unknown">{verdict || 'UNKNOWN'}</span>;
     }
