@@ -579,6 +579,8 @@ def extract_web_searches(events: list[dict]) -> list[dict]:
 
             # Also check for tool_use_result at event level (structured data)
             tool_use_result = event_data.get("tool_use_result", {})
+            if not isinstance(tool_use_result, dict):
+                continue
             if tool_use_result:
                 tool_use_id = tool_use_result.get("tool_use_id")
                 if tool_use_id and tool_use_id in tool_uses:
