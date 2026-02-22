@@ -29,6 +29,7 @@ const StepCard = ({ step, isSelected, onClick }) => {
       'api_verify',
       'approach_analysis',
       'plan',
+      'replan_checkpoint',
     ];
 
     // Check if this is a non-verdict phase (phase can be comma-separated)
@@ -36,6 +37,7 @@ const StepCard = ({ step, isSelected, onClick }) => {
 
     // Determine badge text for non-verdict phases
     const getNonVerdictBadgeText = () => {
+      if (phase.includes('replan_checkpoint')) return 'Replan';
       if (phase.includes('plan')) return 'Plan';
       if (phase.includes('approach_analysis')) return 'Analysis';
       return 'Runtime Test';
