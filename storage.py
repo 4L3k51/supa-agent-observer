@@ -207,12 +207,26 @@ class SupabaseStorage:
         return result.data or []
 
     def get_events(self, run_id: str, step_id: Optional[int] = None) -> list[dict]:
-        query = self.client.table("orchestrator_events") \
-            .select("*").eq("run_id", run_id)
-        if step_id is not None:
-            query = query.eq("step_id", step_id)
-        result = query.order("id").execute()
-        return result.data or []
+        """Retrieve all events for a run, paginating to bypass the 1000 row limit."""
+        all_events = []
+        page_size = 1000
+        offset = 0
+
+        while True:
+            query = self.client.table("orchestrator_events") \
+                .select("*").eq("run_id", run_id)
+            if step_id is not None:
+                query = query.eq("step_id", step_id)
+            result = query.order("id").range(offset, offset + page_size - 1).execute()
+
+            batch = result.data or []
+            all_events.extend(batch)
+
+            if len(batch) < page_size:
+                break  # Last page
+            offset += page_size
+
+        return all_events
 
     def get_step_events(self, step_id: int) -> list[dict]:
         result = self.client.table("orchestrator_events") \
