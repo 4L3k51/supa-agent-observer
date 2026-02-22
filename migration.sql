@@ -147,6 +147,57 @@ END $$;
 -- Index for querying skills usage
 CREATE INDEX IF NOT EXISTS idx_steps_skills ON orchestrator_steps USING GIN (skills_info);
 
+-- Migration: add token usage columns if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'input_tokens'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN input_tokens INTEGER;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'output_tokens'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN output_tokens INTEGER;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'cache_read_tokens'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN cache_read_tokens INTEGER;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'cache_creation_tokens'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN cache_creation_tokens INTEGER;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'orchestrator_steps' AND column_name = 'cost_usd'
+    ) THEN
+        ALTER TABLE orchestrator_steps ADD COLUMN cost_usd DOUBLE PRECISION;
+    END IF;
+END $$;
+
 
 -- ============================================================
 -- Useful views for analysis
@@ -167,7 +218,13 @@ SELECT
     COUNT(DISTINCT s.id) FILTER (WHERE s.phase = 'implement') AS impl_attempts,
     COUNT(DISTINCT s.id) FILTER (WHERE s.phase = 'verify') AS verify_count,
     COUNT(DISTINCT s.id) FILTER (WHERE s.phase = 'replan_checkpoint') AS replan_count,
-    SUM(s.duration_seconds) AS total_tool_seconds
+    SUM(s.duration_seconds) AS total_tool_seconds,
+    -- Token usage aggregates
+    SUM(s.input_tokens) AS total_input_tokens,
+    SUM(s.output_tokens) AS total_output_tokens,
+    SUM(s.cache_read_tokens) AS total_cache_read_tokens,
+    SUM(s.cache_creation_tokens) AS total_cache_creation_tokens,
+    SUM(s.cost_usd) AS total_cost_usd
 FROM orchestrator_runs r
 LEFT JOIN orchestrator_steps s ON s.run_id = r.run_id
 LEFT JOIN orchestrator_events e ON e.run_id = r.run_id

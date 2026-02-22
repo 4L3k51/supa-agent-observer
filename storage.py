@@ -95,6 +95,12 @@ class SupabaseStorage:
         commands_executed: Optional[list] = None,
         errors_normalized: Optional[list] = None,
         skills_info: Optional[dict] = None,
+        # Token usage
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_creation_tokens: Optional[int] = None,
+        cost_usd: Optional[float] = None,
     ) -> int:
         """Log a step and return the step ID. Raises on failure."""
         result = self.client.table("orchestrator_steps").insert({
@@ -112,6 +118,11 @@ class SupabaseStorage:
             "commands_executed": commands_executed,
             "errors_normalized": errors_normalized,
             "skills_info": skills_info,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            "cost_usd": cost_usd,
             "timestamp": _now(),
         }).execute()
 

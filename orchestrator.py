@@ -86,6 +86,12 @@ class CLIResult:
         self.timed_out: bool = False
         self.killed_idle: bool = False
         self.session_id: str = ""          # session ID for resuming conversations
+        # Token usage tracking
+        self.input_tokens: int = 0
+        self.output_tokens: int = 0
+        self.cache_read_tokens: int = 0
+        self.cache_creation_tokens: int = 0
+        self.cost_usd: float = 0.0
 
 
 # ─────────────────────────────────────────────
@@ -340,6 +346,40 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         pass
 
 
+def _extract_usage(usage: dict, result: CLIResult):
+    """Extract token usage from a usage dict, handling both Claude Code and Cursor formats.
+
+    Claude Code format:
+        {"input_tokens": 1234, "output_tokens": 567, "cache_read_input_tokens": 890, ...}
+
+    Cursor format (possible):
+        {"input": 1234, "output": 567, "cacheRead": 890, "cacheWrite": 100, ...}
+
+    Accumulates tokens (doesn't overwrite) to handle multiple usage events.
+    """
+    if not usage:
+        return
+
+    # Claude Code format (snake_case with _tokens suffix)
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    cache_read = usage.get("cache_read_input_tokens", 0)
+    cache_creation = usage.get("cache_creation_input_tokens", 0)
+
+    # Cursor format fallback (camelCase, shorter names)
+    if not input_tokens and not output_tokens:
+        input_tokens = usage.get("input", 0)
+        output_tokens = usage.get("output", 0)
+        cache_read = usage.get("cacheRead", 0)
+        cache_creation = usage.get("cacheWrite", 0)  # Cursor uses cacheWrite
+
+    # Accumulate (in case of multiple usage events per step)
+    result.input_tokens += input_tokens
+    result.output_tokens += output_tokens
+    result.cache_read_tokens += cache_read
+    result.cache_creation_tokens += cache_creation
+
+
 def _process_stream_line(line: str, result: CLIResult):
     """Parse a stream-json line and extract useful info for real-time display.
 
@@ -376,8 +416,28 @@ def _process_stream_line(line: str, result: CLIResult):
             result.text_result = event.get("result", "")
             duration = event.get("duration_ms", 0) / 1000
             cost = event.get("cost_usd", 0)
+            result.cost_usd = cost
+
+            # Extract token usage - handle both Claude Code and Cursor formats
+            usage = event.get("usage", {})
+            _extract_usage(usage, result)
+
             cost_str = f", ${cost:.4f}" if cost else ""
-            print(f"  📋 Result received ({duration:.1f}s API time{cost_str})")
+            tokens_str = ""
+            if result.input_tokens or result.output_tokens:
+                tokens_str = f", {result.input_tokens:,}→{result.output_tokens:,} tokens"
+                if result.cache_read_tokens:
+                    tokens_str += f" ({result.cache_read_tokens:,} cached)"
+            print(f"  📋 Result received ({duration:.1f}s API time{cost_str}{tokens_str})")
+
+        elif event_type == "message":
+            # Cursor format: usage may be nested in message.usage
+            message = event.get("message", {})
+            usage = message.get("usage", {})
+            if usage:
+                _extract_usage(usage, result)
+                if result.input_tokens or result.output_tokens:
+                    print(f"  📊 Usage: {result.input_tokens:,}→{result.output_tokens:,} tokens")
 
         # Claude Code tool events (may use tool_use or tool_call depending on version)
         elif event_type in ("tool_use", "tool_call"):
@@ -411,6 +471,9 @@ def _process_stream_line(line: str, result: CLIResult):
                     print(f"  👁  Reading: {path}")
                 elif "terminalToolCall" in tool:
                     cmd_text = tool["terminalToolCall"].get("args", {}).get("command", "?")
+                    print(f"  💻 Running: {cmd_text[:80]}")
+                elif "shellToolCall" in tool:
+                    cmd_text = tool["shellToolCall"].get("args", {}).get("command", "?")
                     print(f"  💻 Running: {cmd_text[:80]}")
 
         elif event_type == "assistant":
@@ -1337,6 +1400,10 @@ def extract_commands_from_events(events: list[dict]) -> list[dict]:
                     cmd = nested["terminalToolCall"].get("args", {}).get("command", "")
                     if cmd:
                         commands.append({"command": cmd, "tool": "terminal"})
+                elif "shellToolCall" in nested:
+                    cmd = nested["shellToolCall"].get("args", {}).get("command", "")
+                    if cmd:
+                        commands.append({"command": cmd, "tool": "shell"})
 
         # Cursor format: may have tool_call at top level with different structure
         tool_call = event.get("tool_call", {})
@@ -1345,6 +1412,10 @@ def extract_commands_from_events(events: list[dict]) -> list[dict]:
                 cmd = tool_call["terminalToolCall"].get("args", {}).get("command", "")
                 if cmd:
                     commands.append({"command": cmd, "tool": "terminal"})
+            elif "shellToolCall" in tool_call:
+                cmd = tool_call["shellToolCall"].get("args", {}).get("command", "")
+                if cmd:
+                    commands.append({"command": cmd, "tool": "shell"})
 
     return commands
 
@@ -2222,6 +2293,12 @@ def log_step(store: SupabaseStorage, run_id: str, step_number: int,
         commands_executed=commands_executed,
         errors_normalized=errors_normalized if errors_normalized else None,
         skills_info=skills_info,
+        # Token usage
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+        cache_read_tokens=result.cache_read_tokens,
+        cache_creation_tokens=result.cache_creation_tokens,
+        cost_usd=result.cost_usd,
     )
 
     # Batch insert events for performance - step must exist first (FK constraint)

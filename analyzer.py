@@ -611,6 +611,11 @@ def generate_full_report(store, run_id: str) -> dict:
         # Calculate total duration for this step
         step_duration = sum(s.get("duration_seconds", 0) or 0 for s in group)
 
+        # Calculate token usage for this step
+        step_input_tokens = sum(s.get("input_tokens") or 0 for s in group)
+        step_output_tokens = sum(s.get("output_tokens") or 0 for s in group)
+        step_cost = sum(s.get("cost_usd") or 0 for s in group)
+
         step_outcomes.append({
             "step": step_num,
             "build_phase": build_phase,
@@ -619,6 +624,9 @@ def generate_full_report(store, run_id: str) -> dict:
             "retries": retries,
             "resolution_actions": resolution_actions if resolution_actions else None,
             "duration_seconds": round(step_duration, 2),
+            "input_tokens": step_input_tokens,
+            "output_tokens": step_output_tokens,
+            "cost_usd": round(step_cost, 4) if step_cost else None,
         })
 
         # Collect failures
@@ -729,6 +737,14 @@ def generate_full_report(store, run_id: str) -> dict:
             "success_rate": round(passed / total, 2) if total > 0 else 0,
         },
 
+        "token_usage": {
+            "total_input_tokens": sum(s.get("input_tokens") or 0 for s in steps),
+            "total_output_tokens": sum(s.get("output_tokens") or 0 for s in steps),
+            "total_cache_read_tokens": sum(s.get("cache_read_tokens") or 0 for s in steps),
+            "total_cache_creation_tokens": sum(s.get("cache_creation_tokens") or 0 for s in steps),
+            "total_cost_usd": round(sum(s.get("cost_usd") or 0 for s in steps), 4),
+        },
+
         "step_outcomes": step_outcomes,
 
         "failures": {
@@ -817,18 +833,50 @@ def generate_analysis_markdown(full_report: dict) -> str:
         f"",
     ]
 
-    # Step outcomes table
-    lines.extend([
-        f"## Step Outcomes",
-        f"",
-        f"| Step | Phase | Verdict | Attempts | Duration |",
-        f"|------|-------|---------|----------|----------|",
-    ])
-    for step in r["step_outcomes"]:
-        lines.append(
-            f"| {step['step']} | {step['build_phase'] or '-'} | {step['final_verdict']} | "
-            f"{step['attempts']} | {step['duration_seconds']:.1f}s |"
-        )
+    # Token usage section
+    tu = r.get("token_usage", {})
+    if tu.get("total_input_tokens") or tu.get("total_output_tokens"):
+        lines.extend([
+            f"## Token Usage",
+            f"",
+            f"| Metric | Value |",
+            f"|--------|-------|",
+            f"| Input Tokens | {tu.get('total_input_tokens', 0):,} |",
+            f"| Output Tokens | {tu.get('total_output_tokens', 0):,} |",
+            f"| Cache Read | {tu.get('total_cache_read_tokens', 0):,} |",
+            f"| Cache Creation | {tu.get('total_cache_creation_tokens', 0):,} |",
+            f"| Total Cost | ${tu.get('total_cost_usd', 0):.4f} |",
+            f"",
+        ])
+
+    # Step outcomes table - include tokens if any step has them
+    has_tokens = any(step.get("input_tokens") or step.get("output_tokens") for step in r["step_outcomes"])
+    if has_tokens:
+        lines.extend([
+            f"## Step Outcomes",
+            f"",
+            f"| Step | Phase | Verdict | Attempts | Duration | Tokens (in→out) | Cost |",
+            f"|------|-------|---------|----------|----------|-----------------|------|",
+        ])
+        for step in r["step_outcomes"]:
+            tokens_str = f"{step.get('input_tokens', 0):,}→{step.get('output_tokens', 0):,}" if step.get('input_tokens') else "-"
+            cost_str = f"${step.get('cost_usd', 0):.4f}" if step.get('cost_usd') else "-"
+            lines.append(
+                f"| {step['step']} | {step['build_phase'] or '-'} | {step['final_verdict']} | "
+                f"{step['attempts']} | {step['duration_seconds']:.1f}s | {tokens_str} | {cost_str} |"
+            )
+    else:
+        lines.extend([
+            f"## Step Outcomes",
+            f"",
+            f"| Step | Phase | Verdict | Attempts | Duration |",
+            f"|------|-------|---------|----------|----------|",
+        ])
+        for step in r["step_outcomes"]:
+            lines.append(
+                f"| {step['step']} | {step['build_phase'] or '-'} | {step['final_verdict']} | "
+                f"{step['attempts']} | {step['duration_seconds']:.1f}s |"
+            )
     lines.append("")
 
     # Failure categories
