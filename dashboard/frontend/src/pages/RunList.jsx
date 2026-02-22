@@ -265,6 +265,14 @@ const RunList = () => {
                   <Link to={`/runs/${run.run_id}`} className="run-link">
                     {truncate(run.run_id, 8)}
                   </Link>
+                  {run.steps_without_events > 0 && (
+                    <span
+                      className="event-coverage-warning"
+                      title={run.event_coverage}
+                    >
+                      ⚠️
+                    </span>
+                  )}
                 </td>
                 <td>{formatDate(run.generated_at)}</td>
                 <td title={run.prompt}>{truncate(run.prompt, 60)}</td>

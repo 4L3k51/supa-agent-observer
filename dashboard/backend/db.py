@@ -43,6 +43,9 @@ def init_db() -> None:
                 total_cost_usd REAL DEFAULT 0,
                 events_count INTEGER DEFAULT 0,
                 events_may_be_truncated BOOLEAN DEFAULT 0,
+                steps_with_events INTEGER DEFAULT 0,
+                steps_without_events INTEGER DEFAULT 0,
+                event_coverage TEXT,
                 ingested_at TEXT,
                 classified_at TEXT
             )
@@ -72,7 +75,8 @@ def init_db() -> None:
                 error_category_stable BOOLEAN,
                 input_tokens INTEGER DEFAULT 0,
                 output_tokens INTEGER DEFAULT 0,
-                cost_usd REAL DEFAULT 0
+                cost_usd REAL DEFAULT 0,
+                has_events BOOLEAN DEFAULT 0
             )
         """)
 

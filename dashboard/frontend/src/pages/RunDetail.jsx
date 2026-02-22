@@ -190,9 +190,12 @@ const RunDetail = () => {
             <strong>Models:</strong> {modelsUsed.join(', ')}
           </div>
         )}
-        {run.events_may_be_truncated && (
+        {(run.events_may_be_truncated || run.steps_without_events > 0) && (
           <div className="warning-banner">
-            ⚠️ Event data may be incomplete ({run.events_count === 0 ? 'no events captured' : `${run.events_count} events, possible truncation`})
+            ⚠️ Event data incomplete: {run.event_coverage || `${run.events_count} events`}
+            {run.steps_without_events > 0 && (
+              <span> — {run.steps_without_events} step(s) have no event data (events capped at 1000)</span>
+            )}
           </div>
         )}
       </header>

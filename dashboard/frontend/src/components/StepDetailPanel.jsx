@@ -219,6 +219,19 @@ const StepDetailPanel = ({ runId, stepNumber, onClose }) => {
           </div>
         )}
 
+        {/* No Events Warning */}
+        {!step.has_events && (
+          <div className="detail-section">
+            <div className="no-events-warning">
+              <strong>⚠️ No event data available</strong>
+              <p>
+                Events were capped at 1000 and exhausted before this step.
+                Tool calls, file modifications, and approach changes cannot be verified.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Web Searches */}
         {web_searches && web_searches.length > 0 && (
           <div className="detail-section">

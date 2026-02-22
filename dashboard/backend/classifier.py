@@ -71,6 +71,7 @@ def _build_classification_prompt(step: dict, failures: list, run: dict) -> str:
     attempts = step.get("attempts", 1)
     retries = step.get("retries", 0)
     duration = step.get("duration_seconds", 0)
+    has_events = step.get("has_events", False)
 
     # Get errors for this step
     step_failures = [f for f in failures if f.get("step_number") == step_number]
@@ -152,7 +153,15 @@ Notes on the boolean fields:
 - same_file_repeated: Were errors occurring in the same file repeatedly? (suggests implementation issues)
 - error_category_stable: Did the error category stay the same across retries? (suggests implementation if yes, architectural if changing)
 
-If you cannot determine the classification with reasonable confidence, use "ambiguous" with a lower confidence score."""
+If you cannot determine the classification with reasonable confidence, use "ambiguous" with a lower confidence score.
+
+{f'''**WARNING: No event-level data is available for this step.**
+You can only use the parsed_result and error information. You CANNOT verify:
+- What files were modified or read
+- What tool calls were made
+- The actual approach changes between attempts
+Lower your confidence accordingly (max 0.7) and note this limitation in your reasoning.
+Set approach_changed, same_file_repeated, and error_category_stable to null since we cannot determine them.''' if not has_events else ''}"""
 
     return prompt
 
@@ -340,11 +349,22 @@ def classify_run(run_id: str) -> dict:
             classification_data = _parse_classification_response(response_text)
 
             if classification_data and classification_data.get("classification"):
+                # Cap confidence at 0.7 if step has no event data
+                has_events = step.get("has_events", False)
+                if not has_events:
+                    original_conf = classification_data.get("confidence", 0)
+                    classification_data["confidence"] = min(original_conf, 0.7)
+                    # Ensure observable patterns are NULL when events are missing
+                    classification_data["approach_changed"] = None
+                    classification_data["same_file_repeated"] = None
+                    classification_data["error_category_stable"] = None
+
                 if _update_step_classification(run_id, step_number, classification_data):
                     result["classified"] += 1
                     cls = classification_data.get("classification")
                     conf = classification_data.get("confidence", 0)
-                    print(f"  Step {step_number}: {cls} (confidence: {conf:.2f})")
+                    no_events_note = " (no events)" if not has_events else ""
+                    print(f"  Step {step_number}: {cls} (confidence: {conf:.2f}){no_events_note}")
                 else:
                     result["errors"] += 1
                     print(f"  Step {step_number}: failed to save classification")

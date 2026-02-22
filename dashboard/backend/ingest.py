@@ -141,6 +141,33 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
     # Flag if events might be truncated (1000 is a common API limit)
     events_may_be_truncated = events_count >= 1000 or events_count == 0
 
+    # Calculate which steps have events by checking step_id in events
+    step_outcomes = data.get("step_outcomes", [])
+    steps_with_event_data = set()
+    for e in events:
+        # Events have step_id field that links to steps
+        step_id = e.get("step_id")
+        if step_id:
+            steps_with_event_data.add(step_id)
+
+    # Count steps with/without events
+    total_steps = len(step_outcomes)
+    steps_with_events = 0
+    steps_without_events = 0
+    for step_outcome in step_outcomes:
+        step_number = step_outcome.get("step")
+        step_id = step_number  # step_id in events is the step number
+        if step_id in steps_with_event_data:
+            steps_with_events += 1
+        else:
+            steps_without_events += 1
+
+    # Build event coverage string
+    if total_steps > 0:
+        event_coverage = f"{steps_with_events}/{total_steps} steps have events"
+    else:
+        event_coverage = "No steps"
+
     # Current timestamp for ingestion
     ingested_at = datetime.now(timezone.utc).isoformat()
 
@@ -155,8 +182,9 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
             total_input_tokens, total_output_tokens, total_cache_read_tokens,
             total_cache_creation_tokens, total_cost_usd,
             events_count, events_may_be_truncated,
+            steps_with_events, steps_without_events, event_coverage,
             ingested_at, classified_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         run_id,
         data.get("generated_at"),
@@ -185,12 +213,14 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
         token_usage.get("total_cost_usd", 0),
         events_count,
         events_may_be_truncated,
+        steps_with_events,
+        steps_without_events,
+        event_coverage,
         ingested_at,
         None  # classified_at
     ))
 
-    # Process step_outcomes
-    step_outcomes = data.get("step_outcomes", [])
+    # Process step_outcomes (step_outcomes was already loaded above for event coverage)
     failures_section = data.get("failures", {})
     failures_details = failures_section.get("details", [])
 
@@ -220,6 +250,9 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
         resolution_actions = step_outcome.get("resolution_actions")
         resolution_actions_json = json.dumps(resolution_actions) if resolution_actions else None
 
+        # Check if this step has event data
+        has_events = step_number in steps_with_event_data
+
         cursor.execute("""
             INSERT INTO steps (
                 id, run_id, step_number, build_phase, phase, tool,
@@ -228,8 +261,8 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
                 classification, classification_confidence,
                 classification_reasoning, classification_evidence,
                 approach_changed, same_file_repeated, error_category_stable,
-                input_tokens, output_tokens, cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                input_tokens, output_tokens, cost_usd, has_events
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             step_id,
             run_id,
@@ -248,12 +281,13 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
             None,  # classification_confidence
             None,  # classification_reasoning
             None,  # classification_evidence
-            None,  # approach_changed
-            None,  # same_file_repeated
-            None,  # error_category_stable
+            None,  # approach_changed (NULL - we don't know without events)
+            None,  # same_file_repeated (NULL - we don't know without events)
+            None,  # error_category_stable (NULL - we don't know without events)
             step_outcome.get("input_tokens", 0),
             step_outcome.get("output_tokens", 0),
-            step_outcome.get("cost_usd", 0)
+            step_outcome.get("cost_usd", 0),
+            has_events
         ))
 
     # Insert failures (filter out false positives)

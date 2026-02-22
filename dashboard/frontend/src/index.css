@@ -437,6 +437,26 @@ body {
   color: var(--color-partial);
   font-size: 13px;
   margin-top: 12px;
+}
+
+.event-coverage-warning {
+  margin-left: 6px;
+  font-size: 12px;
+  cursor: help;
+}
+
+.no-events-warning {
+  background-color: rgba(210, 153, 34, 0.1);
+  border: 1px solid var(--color-partial);
+  border-radius: 6px;
+  padding: 12px;
+  color: var(--color-partial);
+}
+
+.no-events-warning p {
+  margin: 8px 0 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
   margin-bottom: 20px;
 }
 
