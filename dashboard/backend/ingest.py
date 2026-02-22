@@ -12,6 +12,16 @@ from .db import get_db, run_exists
 REPORTS_DIR = Path(__file__).parent.parent.parent / "reports"
 
 
+def _safe_int(value) -> Optional[int]:
+    """Safely convert a value to int, returning None if not possible."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def get_raw_steps_for_step_number(raw_data: dict, step_number: int) -> list[dict]:
     """
     Extract all raw_data.steps entries for a given step_number.
@@ -24,7 +34,9 @@ def get_raw_steps_for_step_number(raw_data: dict, step_number: int) -> list[dict
         List of raw step dicts matching the step_number
     """
     steps = raw_data.get("steps", [])
-    return [s for s in steps if s.get("step") == step_number]
+    # Coerce to int for consistent comparison (JSON may have int or string)
+    target = int(step_number) if step_number is not None else None
+    return [s for s in steps if _safe_int(s.get("step")) == target]
 
 
 def _delete_run_data(conn: sqlite3.Connection, run_id: str) -> None:
@@ -126,9 +138,10 @@ def _is_false_positive_failure(failure: dict) -> bool:
 
 def _get_failures_for_step(failures_details: list[dict], step_number: int) -> list[dict]:
     """Get all failure details for a specific step number, filtering out false positives."""
+    target = int(step_number) if step_number is not None else None
     return [
         f for f in failures_details
-        if f.get("step") == step_number and not _is_false_positive_failure(f)
+        if _safe_int(f.get("step")) == target and not _is_false_positive_failure(f)
     ]
 
 
@@ -164,20 +177,20 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
     # Build mapping from step_number to list of step_ids from raw_data.steps
     # raw_data.steps has: {"id": step_id, "step": step_number, ...}
     # Multiple raw_data.steps can share the same step_number (implement/verify cycles)
-    raw_steps = raw_data.get("steps", [])
+    raw_steps_list = raw_data.get("steps", [])
     step_number_to_ids: dict[int, set[int]] = {}
-    for rs in raw_steps:
-        step_num = rs.get("step")
-        step_id = rs.get("id")
+    for rs in raw_steps_list:
+        step_num = _safe_int(rs.get("step"))
+        step_id = _safe_int(rs.get("id"))
         if step_num is not None and step_id is not None:
             if step_num not in step_number_to_ids:
                 step_number_to_ids[step_num] = set()
             step_number_to_ids[step_num].add(step_id)
 
-    # Collect step_ids that have events
-    step_ids_with_events = set()
+    # Collect step_ids that have events (coerce to int for consistent comparison)
+    step_ids_with_events: set[int] = set()
     for e in events:
-        step_id = e.get("step_id")
+        step_id = _safe_int(e.get("step_id"))
         if step_id is not None:
             step_ids_with_events.add(step_id)
 
@@ -185,7 +198,9 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
     step_outcomes = data.get("step_outcomes", [])
     step_number_has_events: dict[int, bool] = {}
     for step_outcome in step_outcomes:
-        step_number = step_outcome.get("step")
+        step_number = _safe_int(step_outcome.get("step"))
+        if step_number is None:
+            continue
         # Get all step_ids for this step_number
         ids_for_step = step_number_to_ids.get(step_number, set())
         # Check if any of these ids have events
@@ -260,15 +275,17 @@ def _ingest_single_report(conn: sqlite3.Connection, report_path: Path) -> str:
     failures_details = failures_section.get("details", [])
 
     for step_outcome in step_outcomes:
-        step_number = step_outcome.get("step")
+        step_number = _safe_int(step_outcome.get("step"))
+        if step_number is None:
+            continue
         step_id = f"{run_id}_{step_number}"
 
         # Get raw steps for this step number
-        raw_steps = get_raw_steps_for_step_number(raw_data, step_number)
+        raw_steps_for_step = get_raw_steps_for_step_number(raw_data, step_number)
 
         # Extract phase and tool from raw steps
-        phase = _extract_phase_from_raw_steps(raw_steps)
-        tool = _extract_tool_from_raw_steps(raw_steps)
+        phase = _extract_phase_from_raw_steps(raw_steps_for_step)
+        tool = _extract_tool_from_raw_steps(raw_steps_for_step)
 
         # Get failures for this step
         step_failures = _get_failures_for_step(failures_details, step_number)
