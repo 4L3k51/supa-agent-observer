@@ -29,6 +29,9 @@ const StepCard = ({ step, isSelected, onClick }) => {
       'api_verify',
     ];
 
+    // Check if this is a runtime test phase (phase can be comma-separated)
+    const isRuntimeTest = runtimeTestPhases.some(p => phase.includes(p));
+
     switch (verdict) {
       case 'PROCEED':
         return <span className="verdict-badge verdict-proceed">PROCEED</span>;
@@ -36,9 +39,13 @@ const StepCard = ({ step, isSelected, onClick }) => {
         return <span className="verdict-badge verdict-fail">FAIL</span>;
       case 'SKIP':
         return <span className="verdict-badge verdict-skip">SKIP</span>;
+      case 'UNKNOWN':
+      case '':
+      case undefined:
+      case null:
       default:
-        // Check if this is a runtime test phase
-        if (runtimeTestPhases.some(p => phase.includes(p))) {
+        // For UNKNOWN or missing verdict, check if it's a runtime test phase
+        if (isRuntimeTest) {
           return <span className="verdict-badge verdict-test">Runtime Test</span>;
         }
         return <span className="verdict-badge verdict-unknown">{verdict || 'UNKNOWN'}</span>;

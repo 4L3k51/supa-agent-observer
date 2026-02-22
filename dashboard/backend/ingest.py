@@ -72,6 +72,7 @@ def _is_false_positive_failure(failure: dict) -> bool:
     Check if a failure entry is actually a false positive (success mistakenly labeled as failure).
 
     The analyzer sometimes includes success messages in failures.details.
+    The "other" category is a catch-all from regex that doesn't match real error patterns.
     Filter out entries that are clearly not failures.
     """
     error = (failure.get("error") or "").strip().lower()
@@ -86,19 +87,38 @@ def _is_false_positive_failure(failure: dict) -> bool:
         "successfully",
         "completed successfully",
         "all tests passed",
+        "all tests pass",
         "build successful",
+        "build_succeeds: yes",
+        "build_succeeds:yes",
+        "all done",
+        "everything looks good",
+        "passed:",
+        "tests pass",
+        "looks good",
+        "completed without",
     ]
 
-    # If exit_code is 0 and category is "other", check for success indicators
-    if exit_code == 0 or exit_code is None:
-        if category == "other" or not category:
-            for indicator in success_indicators:
-                if indicator in error:
-                    return True
+    # Category "other" with exit_code 0 or None is almost always a false positive
+    if category == "other" or not category:
+        # If exit_code is 0 or None, it's likely not a real failure
+        if exit_code == 0 or exit_code is None:
+            return True
+        # Even with exit_code, check for success indicators
+        for indicator in success_indicators:
+            if indicator in error:
+                return True
+
+    # For any category, filter out clear success messages
+    for indicator in success_indicators:
+        if indicator in error:
+            # Only filter if there's no clear failure indicator
+            if "fail" not in error and "error" not in error and "exception" not in error:
+                return True
 
     # If error message is very short and looks like a pass
-    if len(error) < 50 and any(word in error for word in ["pass", "complete", "success", "proceed"]):
-        if "fail" not in error and "error" not in error:
+    if len(error) < 100 and any(word in error for word in ["pass", "complete", "success", "proceed", "done"]):
+        if "fail" not in error and "error" not in error and "exception" not in error:
             return True
 
     return False
